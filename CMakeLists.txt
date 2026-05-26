@@ -30,6 +30,10 @@ if(MSVC)
     target_compile_options(musuka PRIVATE /W4 /permissive- /utf-8)
 endif()
 
+if(MINGW)
+    target_link_options(musuka PRIVATE -municode)
+endif()
+
 target_link_libraries(musuka PRIVATE
     gdiplus
     comctl32

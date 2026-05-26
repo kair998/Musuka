@@ -1,5 +1,7 @@
 build/
+build-mingw/
 release/
+release-mingw/
 data/
 *.user
 *.suo
@@ -7,4 +9,3 @@ data/
 *.pdb
 *.ilk
 *.exe
-

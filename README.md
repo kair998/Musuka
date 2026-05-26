@@ -24,6 +24,38 @@ build\Release\musuka.exe
 
 也可以用 Visual Studio 打开本目录的 CMake 项目进行编译。
 
+### 使用 MinGW-w64 构建
+
+如果不安装 Visual Studio Build Tools，也可以使用 MinGW-w64。要求：
+
+- CMake 3.20+
+- MinGW-w64，`g++.exe` 在 `PATH` 中
+- 推荐安装 Ninja；没有 Ninja 时脚本会使用 `mingw32-make.exe`
+
+MSYS2 MinGW64 常见 PATH 示例：
+
+```bat
+set PATH=C:\msys64\mingw64\bin;%PATH%
+```
+
+构建：
+
+```bat
+build_mingw.bat
+```
+
+运行：
+
+```bat
+run_mingw.bat
+```
+
+生成文件：
+
+```text
+build-mingw\musuka.exe
+```
+
 ## 打包
 
 ```bat
@@ -34,6 +66,21 @@ package.bat
 
 ```text
 release\
+  musuka.exe
+  default_image\
+  README.md
+```
+
+MinGW 打包：
+
+```bat
+package_mingw.bat
+```
+
+生成：
+
+```text
+release-mingw\
   musuka.exe
   default_image\
   README.md
@@ -103,4 +150,3 @@ data\
 13. 右键替换图片，测试“打开”“打开所在位置”“返回 settings”“退出 musuka”。
 14. 关闭后再次打开，确认配置仍然存在。
 15. 删除某张原始导入图片，再次进入 desktop，确认 musuka 内部备份图片仍可使用。
-
