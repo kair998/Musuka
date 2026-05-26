@@ -1,6 +1,8 @@
-# musuka
 
-musuka 是一个 Windows 桌面图标娘化替换软件。当前版本不会修改真实 Windows 桌面文件，也不会修改系统图标；它会创建一个由 musuka 管理的拟桌面窗口，在背景上绘制替换图片，并通过这些图片打开对应桌面对象。
+<img width="1672" height="941" alt="ChatGPT Image 2026年5月27日 01_07_15" src="https://github.com/user-attachments/assets/d92a2a12-06cb-4f92-9b3f-0c776701d0eb" />
+# Musuka
+
+Musuka 是一个 Windows 桌面图标娘化替换软件。当前版本不会修改真实 Windows 桌面文件，也不会修改系统图标；它会创建一个由 musuka 管理的拟桌面窗口，在背景上绘制替换图片，并通过这些图片打开对应桌面对象。
 
 ## 构建
 
