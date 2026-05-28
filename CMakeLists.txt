@@ -25,6 +25,7 @@ add_executable(musuka WIN32
     src/SettingsWindow.cpp
     src/Util.cpp
     src/WinUtil.cpp
+    src/Musuka.rc
 )
 
 target_compile_definitions(musuka PRIVATE
