@@ -24,7 +24,8 @@ constexpr int kLabelHeight = 36;
 constexpr int kLabelExtraWidth = 48;
 constexpr int kIconScaleStep = 24;
 constexpr int kDesktopMargin = 24;
-constexpr int kAutoArrangeGap = 16;
+constexpr int kNativeAutoArrangeGap = 4;
+constexpr int kReplacementAutoArrangeGap = 16;
 constexpr int kAutoArrangeScanStep = 16;
 
 bool ShellExecuteChecked(HWND owner,
@@ -118,10 +119,15 @@ bool RectIntersectsAny(const RECT& rect, const std::vector<RECT>& occupied) {
     return false;
 }
 
+int AutoArrangeGapForItem(bool showLabel) {
+    return showLabel ? kNativeAutoArrangeGap : kReplacementAutoArrangeGap;
+}
+
 bool TryFindPlacement(const DesktopObject& object,
                       bool showLabel,
                       const RECT& client,
                       const std::vector<RECT>& occupied,
+                      int gap,
                       POINT& point) {
     const int width = RectWidth(client);
     const int height = RectHeight(client);
@@ -142,7 +148,7 @@ bool TryFindPlacement(const DesktopObject& object,
             if (!RectInside(bounds, client)) {
                 continue;
             }
-            if (RectIntersectsAny(InflateCopy(bounds, kAutoArrangeGap), occupied)) {
+            if (RectIntersectsAny(InflateCopy(bounds, gap), occupied)) {
                 continue;
             }
             point = POINT{x, y};
@@ -503,7 +509,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         const auto& item = items_[static_cast<size_t>(i)];
         DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
         const RECT bounds = RectFromRectF(item.bounds);
-        const RECT paddedBounds = InflateCopy(bounds, kAutoArrangeGap);
+        const RECT paddedBounds = InflateCopy(bounds, AutoArrangeGapForItem(item.showLabel));
         if (object.x < 0 ||
             object.y < 0 ||
             !RectInside(bounds, rc) ||
@@ -537,6 +543,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         const int originalX = object.x;
         const int originalY = object.y;
         const int originalSize = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+        const int gap = AutoArrangeGapForItem(item.showLabel);
 
         std::vector<int> sizes;
         for (int size = originalSize; size > kDesktopIconMinSize; size -= kIconScaleStep) {
@@ -548,7 +555,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         POINT placement{};
         for (int size : sizes) {
             object.iconSize = size;
-            if (TryFindPlacement(object, item.showLabel, rc, occupied, placement)) {
+            if (TryFindPlacement(object, item.showLabel, rc, occupied, gap, placement)) {
                 placed = true;
                 break;
             }
@@ -562,7 +569,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         object.x = placement.x;
         object.y = placement.y;
         occupied.push_back(InflateCopy(PlacementBounds(object, item.showLabel, object.x, object.y),
-                                       kAutoArrangeGap));
+                                       gap));
         if (object.x != originalX || object.y != originalY || object.iconSize != originalSize) {
             changed = true;
         }
