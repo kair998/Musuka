@@ -12,8 +12,7 @@
 
 namespace musuka {
 
-constexpr int kDesktopIconMaxSize = 160;
-constexpr int kThumbnailSize = 72;
+constexpr int kThumbnailSize = 96;
 
 bool SaveHIconAsPng(HICON icon, const std::wstring& path);
 HICON LoadShellIconForObject(const DesktopObject& object, bool large);

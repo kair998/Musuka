@@ -6,6 +6,7 @@
 #include <fstream>
 #include <filesystem>
 #include <sstream>
+#include <algorithm>
 
 namespace musuka {
 
@@ -25,6 +26,7 @@ JsonValue CandidateToJson(const ImageCandidate& candidate) {
     object["original_path"] = WideStringValue(candidate.originalPath);
     object["internal_path"] = WideStringValue(candidate.internalPath);
     object["original_icon"] = JsonValue::Bool(candidate.originalIcon);
+    object["layer_priority"] = JsonValue::Number(candidate.layerPriority);
     return JsonValue::ObjectValue(std::move(object));
 }
 
@@ -34,6 +36,8 @@ ImageCandidate CandidateFromJson(const JsonValue& value) {
     candidate.originalPath = WideFromValue(value.At("original_path"));
     candidate.internalPath = WideFromValue(value.At("internal_path"));
     candidate.originalIcon = value.At("original_icon").AsBool(false);
+    candidate.layerPriority = static_cast<int>(
+        value.At("layer_priority").AsNumber(kDefaultImageLayerPriority));
     return candidate;
 }
 
@@ -47,6 +51,7 @@ JsonValue ObjectToJson(const DesktopObject& object) {
     result["include_in_desktop"] = JsonValue::Bool(object.includeInDesktop);
     result["x"] = JsonValue::Number(object.x);
     result["y"] = JsonValue::Number(object.y);
+    result["icon_size"] = JsonValue::Number(object.iconSize);
     result["selected_candidate"] = JsonValue::Number(object.selectedCandidate);
 
     std::wstring selectedPath;
@@ -74,6 +79,10 @@ DesktopObject ObjectFromJson(const JsonValue& value) {
     object.includeInDesktop = value.At("include_in_desktop").AsBool(true);
     object.x = static_cast<int>(value.At("x").AsNumber(-1));
     object.y = static_cast<int>(value.At("y").AsNumber(-1));
+    object.iconSize = std::clamp(
+        static_cast<int>(value.At("icon_size").AsNumber(kDesktopIconDefaultSize)),
+        kDesktopIconMinSize,
+        kDesktopIconMaxSize);
     object.selectedCandidate = static_cast<int>(value.At("selected_candidate").AsNumber(0));
 
     for (const auto& item : value.At("candidates").AsArray()) {

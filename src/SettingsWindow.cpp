@@ -29,13 +29,14 @@ constexpr int ID_IMPORT_FOLDER = 1104;
 constexpr int ID_CANDIDATE_LIST = 1105;
 constexpr int ID_TOGGLE_INCLUDE = 1106;
 constexpr int ID_REPLACE = 1107;
+constexpr int ID_ICON_SIZE_SLIDER = 1108;
+constexpr int ID_TOGGLE_INCLUDE_ALL = 1109;
 constexpr int ID_MODE_ENGINE = 1201;
 constexpr int ID_MODE_WALLPAPER = 1202;
 constexpr int ID_BG_SYSTEM = 1203;
 constexpr int ID_BG_SOLID = 1204;
 constexpr int ID_CHOOSE_COLOR = 1205;
 constexpr int ID_COLOR_PREVIEW = 1206;
-constexpr int WM_APP_REBUILD_PAGE = WM_APP + 1;
 
 std::wstring LowerText(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -64,12 +65,38 @@ HBITMAP CreateBlankThumbnail(int width, int height) {
     return bitmap;
 }
 
+bool CandidateHasOriginalPath(const DesktopObject& object, const std::wstring& originalPath) {
+    const std::wstring normalized = NormalizePathForCompare(originalPath);
+    return std::any_of(object.candidates.begin(), object.candidates.end(), [&](const ImageCandidate& candidate) {
+        return NormalizePathForCompare(candidate.originalPath) == normalized;
+    });
+}
+
+HMENU ControlId(int id) {
+    return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
+}
+
+std::wstring ObjectListText(const DesktopObject& object) {
+    std::wstring name = object.name;
+    if (!object.includeInDesktop) {
+        name += L"  [忽略]";
+    }
+    return name;
+}
+
 } // namespace
 
 SettingsWindow::SettingsWindow(App* app) : app_(app) {
     LOGFONTW logFont{};
     HFONT guiFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     GetObjectW(guiFont, sizeof(logFont), &logFont);
+    HDC dc = GetDC(nullptr);
+    const int dpiY = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+    if (dc) {
+        ReleaseDC(nullptr, dc);
+    }
+    logFont.lfHeight = -MulDiv(11, dpiY, 72);
+    wcscpy_s(logFont.lfFaceName, L"Segoe UI");
     logFont.lfStrikeOut = TRUE;
     strikeFont_ = CreateFontIndirectW(&logFont);
 }
@@ -228,6 +255,8 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam
             ImportImageFolder();
         } else if (id == ID_TOGGLE_INCLUDE) {
             ToggleIncludeSelected();
+        } else if (id == ID_TOGGLE_INCLUDE_ALL) {
+            ToggleIncludeAll();
         } else if (id == ID_REPLACE) {
             ReplaceSelectedImage();
         } else if (id == ID_MODE_ENGINE) {
@@ -248,6 +277,12 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam
         }
         return 0;
     }
+    case WM_HSCROLL:
+        if (reinterpret_cast<HWND>(lParam) == iconSizeSlider_) {
+            OnIconSizeSliderChanged();
+            return 0;
+        }
+        break;
     case WM_NOTIFY:
         return HandleNotify(lParam);
     case WM_DRAWITEM: {
@@ -258,9 +293,6 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam
         }
         break;
     }
-    case WM_APP_REBUILD_PAGE:
-        BuildPage();
-        return 0;
     case WM_CLOSE:
         SaveConfigQuietly();
         DestroyWindow(hwnd_);
@@ -354,6 +386,10 @@ void SettingsWindow::DestroyChildControls() {
     candidateList_ = nullptr;
     previewPane_ = nullptr;
     colorPreview_ = nullptr;
+    includeButton_ = nullptr;
+    includeAllButton_ = nullptr;
+    iconSizeSlider_ = nullptr;
+    iconSizeValue_ = nullptr;
 
     if (objectImages_) {
         ImageList_Destroy(objectImages_);
@@ -390,7 +426,7 @@ HWND SettingsWindow::CreateStatic(const std::wstring& text, int x, int y, int w,
 HWND SettingsWindow::CreateButton(const std::wstring& text, int id, int x, int y, int w, int h, DWORD style) {
     HWND control = CreateWindowExW(0, L"BUTTON", text.c_str(),
                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | style,
-                                   x, y, w, h, hwnd_, reinterpret_cast<HMENU>(id), app_->Instance(), nullptr);
+                                   x, y, w, h, hwnd_, ControlId(id), app_->Instance(), nullptr);
     ApplyDefaultFont(control);
     return control;
 }
@@ -398,7 +434,7 @@ HWND SettingsWindow::CreateButton(const std::wstring& text, int id, int x, int y
 HWND SettingsWindow::CreateEdit(const std::wstring& text, int id, int x, int y, int w, int h) {
     HWND control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text.c_str(),
                                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-                                   x, y, w, h, hwnd_, reinterpret_cast<HMENU>(id), app_->Instance(), nullptr);
+                                   x, y, w, h, hwnd_, ControlId(id), app_->Instance(), nullptr);
     ApplyDefaultFont(control);
     return control;
 }
@@ -424,7 +460,7 @@ void SettingsWindow::BuildPage1() {
 
     CreateStatic(L"musuka settings", 28, 22, 280, 28, SS_LEFT);
     CreateStatic(L"第一步：选择桌面路径", 28, 62, 360, 24, SS_LEFT);
-    CreateStatic(L"请选择当前系统桌面文件夹路径。musuka 只扫描快捷方式、普通文件夹，并加入此电脑和回收站。", 28, 94, rc.right - 56, 24, SS_LEFT);
+    CreateStatic(L"请选择主要桌面路径。musuka 会同时扫描该路径、当前用户桌面、公共桌面，并加入“此电脑”和“回收站”。", 28, 94, rc.right - 56, 28, SS_LEFT);
 
     std::wstring desktopPath = app_->Config().desktopPath;
     if (desktopPath.empty()) {
@@ -449,8 +485,8 @@ void SettingsWindow::BuildPage2() {
     const int top = 52;
     const int bottom = rc.bottom - 60;
     const int contentHeight = bottom - top;
-    const int leftW = 330;
-    const int midW = 405;
+    const int leftW = 360;
+    const int midW = 380;
     const int rightW = rc.right - margin * 4 - leftW - midW;
     const int leftX = margin;
     const int midX = leftX + leftW + margin;
@@ -459,15 +495,15 @@ void SettingsWindow::BuildPage2() {
     CreateStatic(L"第二步：文件选择和替代图片配置", margin, 18, 520, 24, SS_LEFT);
 
     CreateStatic(L"", leftX, top, leftW, contentHeight, SS_ETCHEDFRAME);
-    CreateStatic(L"Specified Desktop File Selected Replace Image Preview", leftX + 12, top + 14, leftW - 24, 36, SS_LEFT);
+    CreateStatic(L"已选文件替代图片预览", leftX + 12, top + 14, leftW - 24, 26, SS_LEFT);
     previewPane_ = CreateWindowExW(WS_EX_CLIENTEDGE,
                                    L"MusukaPreviewPane",
                                    L"",
                                    WS_CHILD | WS_VISIBLE,
                                    leftX + 16,
-                                   top + 64,
+                                   top + 50,
                                    leftW - 32,
-                                   std::min(contentHeight - 84, leftW - 32),
+                                   contentHeight - 68,
                                    hwnd_,
                                    nullptr,
                                    app_->Instance(),
@@ -484,7 +520,7 @@ void SettingsWindow::BuildPage2() {
                                   midW - 24,
                                   contentHeight - 66,
                                   hwnd_,
-                                  reinterpret_cast<HMENU>(ID_OBJECT_LIST),
+                                  ControlId(ID_OBJECT_LIST),
                                   app_->Instance(),
                                   nullptr);
     ApplyDefaultFont(objectList_);
@@ -499,15 +535,40 @@ void SettingsWindow::BuildPage2() {
     CreateStatic(L"", rightX, top, rightW, contentHeight, SS_ETCHEDFRAME);
     DesktopObject* selected = SelectedObject();
     if (!selected) {
-        CreateStatic(L"选定文件后，在此导入图片 / 配置图标替代图片\r\nConfig Icon-Replace Image",
+        CreateStatic(L"选定文件后，在此导入图片并配置替代图。",
                      rightX + 20, top + 24, rightW - 40, 80, SS_LEFT);
     } else {
-        CreateStatic(L"Config Icon-Replace Image", rightX + 14, top + 14, rightW - 28, 24, SS_LEFT);
+        CreateStatic(L"替代图片", rightX + 14, top + 14, rightW - 28, 24, SS_LEFT);
         CreateButton(L"导入单张图片", ID_IMPORT_SINGLE, rightX + 14, top + 48, 130, 30);
         CreateButton(L"导入整个图片文件夹", ID_IMPORT_FOLDER, rightX + 154, top + 48, 170, 30);
 
+        const int sizeY = top + 88;
+        CreateStatic(L"桌面显示尺寸", rightX + 14, sizeY + 3, 102, 22, SS_LEFT);
+        iconSizeSlider_ = CreateWindowExW(0,
+                                          TRACKBAR_CLASSW,
+                                          L"",
+                                          WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                          rightX + 118,
+                                          sizeY,
+                                          rightW - 210,
+                                          30,
+                                          hwnd_,
+                                          ControlId(ID_ICON_SIZE_SLIDER),
+                                          app_->Instance(),
+                                          nullptr);
+        SendMessageW(iconSizeSlider_, TBM_SETRANGE, TRUE, MAKELPARAM(kDesktopIconMinSize, kDesktopIconMaxSize));
+        SendMessageW(iconSizeSlider_, TBM_SETPAGESIZE, 0, 24);
+        SendMessageW(iconSizeSlider_, TBM_SETTICFREQ, 32, 0);
+        SendMessageW(iconSizeSlider_, TBM_SETPOS, TRUE, std::clamp(selected->iconSize, kDesktopIconMinSize, kDesktopIconMaxSize));
+        iconSizeValue_ = CreateStatic(std::to_wstring(selected->iconSize) + L" px",
+                                      rightX + rightW - 82,
+                                      sizeY + 3,
+                                      62,
+                                      22,
+                                      SS_RIGHT);
+
         const int listX = rightX + 14;
-        const int listY = top + 92;
+        const int listY = top + 132;
         const int buttonW = 118;
         candidateList_ = CreateWindowExW(WS_EX_CLIENTEDGE,
                                          WC_LISTVIEWW,
@@ -516,9 +577,9 @@ void SettingsWindow::BuildPage2() {
                                          listX,
                                          listY,
                                          rightW - 42 - buttonW,
-                                         contentHeight - 110,
+                                         contentHeight - 150,
                                          hwnd_,
-                                         reinterpret_cast<HMENU>(ID_CANDIDATE_LIST),
+                                         ControlId(ID_CANDIDATE_LIST),
                                          app_->Instance(),
                                          nullptr);
         ApplyDefaultFont(candidateList_);
@@ -526,8 +587,10 @@ void SettingsWindow::BuildPage2() {
         PopulateCandidateList();
 
         const std::wstring includeText = selected->includeInDesktop ? L"忽略" : L"带入";
-        CreateButton(includeText, ID_TOGGLE_INCLUDE, rightX + rightW - buttonW - 14, listY, buttonW, 32);
-        CreateButton(L"替换", ID_REPLACE, rightX + rightW - buttonW - 14, listY + 42, buttonW, 32);
+        includeButton_ = CreateButton(includeText, ID_TOGGLE_INCLUDE, rightX + rightW - buttonW - 14, listY, buttonW, 32);
+        includeAllButton_ = CreateButton(L"忽略全部", ID_TOGGLE_INCLUDE_ALL, rightX + rightW - buttonW - 14, listY + 42, buttonW, 32);
+        CreateButton(L"替换", ID_REPLACE, rightX + rightW - buttonW - 14, listY + 84, buttonW, 32);
+        UpdateSelectionDetailControls();
     }
 
     BuildNavigation(true, true, false);
@@ -592,7 +655,7 @@ void SettingsWindow::BuildPage3() {
                                     88,
                                     30,
                                     hwnd_,
-                                    reinterpret_cast<HMENU>(ID_COLOR_PREVIEW),
+                                    ControlId(ID_COLOR_PREVIEW),
                                     app_->Instance(),
                                     nullptr);
 
@@ -693,7 +756,7 @@ void SettingsWindow::OnObjectSelected(int objectIndex) {
     }
     selectedObjectIndex_ = objectIndex;
     selectedCandidateIndex_ = app_->Config().objects[static_cast<size_t>(objectIndex)].selectedCandidate;
-    PostMessageW(hwnd_, WM_APP_REBUILD_PAGE, 0, 0);
+    RefreshSelectedObjectControls();
 }
 
 void SettingsWindow::ImportSingleImage() {
@@ -711,7 +774,7 @@ void SettingsWindow::ImportSingleImage() {
         return;
     }
     SaveConfigQuietly();
-    BuildPage();
+    RefreshSelectedObjectControls();
 }
 
 void SettingsWindow::ImportImageFolder() {
@@ -723,15 +786,27 @@ void SettingsWindow::ImportImageFolder() {
     if (folder.empty()) {
         return;
     }
-    const auto images = EnumerateImageFiles(folder, true);
+    const auto images = EnumerateImageFiles(folder, false);
     if (images.empty()) {
-        ShowError(hwnd_, L"该文件夹中没有支持的图片格式。");
+        ShowError(hwnd_, L"该文件夹中没有支持的图片格式。当前只导入所选文件夹内的图片，不递归子目录。");
         return;
+    }
+    if (images.size() > 50) {
+        const std::wstring message = L"该文件夹内有 " + std::to_wstring(images.size()) +
+            L" 张图片。确认批量导入这些图片吗？";
+        if (MessageBoxW(hwnd_, message.c_str(), L"musuka", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+            return;
+        }
     }
 
     int imported = 0;
+    int skipped = 0;
     std::wstring lastError;
     for (const auto& image : images) {
+        if (CandidateHasOriginalPath(*object, image)) {
+            ++skipped;
+            continue;
+        }
         std::wstring error;
         if (AddCandidateFromFile(*object, image, error)) {
             ++imported;
@@ -740,11 +815,19 @@ void SettingsWindow::ImportImageFolder() {
         }
     }
     if (imported == 0) {
+        if (skipped > 0) {
+            ShowInfo(hwnd_, L"所选文件夹中的图片已经全部导入过，本次未新增候选图片。");
+            return;
+        }
         ShowError(hwnd_, lastError.empty() ? L"图片导入失败。" : lastError);
         return;
     }
     SaveConfigQuietly();
-    BuildPage();
+    RefreshSelectedObjectControls();
+    if (images.size() > 1 || skipped > 0) {
+        ShowInfo(hwnd_, L"已导入 " + std::to_wstring(imported) +
+                        L" 张图片，跳过 " + std::to_wstring(skipped) + L" 张重复图片。");
+    }
 }
 
 void SettingsWindow::ToggleIncludeSelected() {
@@ -754,7 +837,24 @@ void SettingsWindow::ToggleIncludeSelected() {
     }
     object->includeInDesktop = !object->includeInDesktop;
     SaveConfigQuietly();
-    BuildPage();
+    UpdateObjectListRow(selectedObjectIndex_);
+    UpdateSelectionDetailControls();
+}
+
+void SettingsWindow::ToggleIncludeAll() {
+    auto& objects = app_->Config().objects;
+    if (objects.empty()) {
+        return;
+    }
+    const bool anyIncluded = std::any_of(objects.begin(), objects.end(), [](const DesktopObject& object) {
+        return object.includeInDesktop;
+    });
+    for (auto& object : objects) {
+        object.includeInDesktop = !anyIncluded;
+    }
+    SaveConfigQuietly();
+    UpdateVisibleObjectRows();
+    UpdateSelectionDetailControls();
 }
 
 void SettingsWindow::ReplaceSelectedImage() {
@@ -770,6 +870,22 @@ void SettingsWindow::ReplaceSelectedImage() {
         InvalidateRect(previewPane_, nullptr, TRUE);
     }
     PopulateCandidateList();
+}
+
+void SettingsWindow::OnIconSizeSliderChanged() {
+    DesktopObject* object = SelectedObject();
+    if (!object || !iconSizeSlider_) {
+        return;
+    }
+    const int size = std::clamp(static_cast<int>(SendMessageW(iconSizeSlider_, TBM_GETPOS, 0, 0)),
+                                kDesktopIconMinSize,
+                                kDesktopIconMaxSize);
+    if (object->iconSize == size) {
+        return;
+    }
+    object->iconSize = size;
+    SaveConfigQuietly();
+    UpdateSelectionDetailControls();
 }
 
 void SettingsWindow::ChooseSolidColor() {
@@ -803,9 +919,42 @@ bool SettingsWindow::AddCandidateFromFile(DesktopObject& object, const std::wstr
     candidate.originalPath = imagePath;
     candidate.internalPath = relative;
     candidate.originalIcon = false;
+    candidate.layerPriority = kImportedImageLayerPriority;
     object.candidates.push_back(std::move(candidate));
     selectedCandidateIndex_ = static_cast<int>(object.candidates.size()) - 1;
     return true;
+}
+
+void SettingsWindow::RefreshSelectedObjectControls() {
+    if (!candidateList_ || !previewPane_) {
+        BuildPage();
+        return;
+    }
+    PopulateCandidateList();
+    UpdateSelectionDetailControls();
+    InvalidateRect(previewPane_, nullptr, TRUE);
+}
+
+void SettingsWindow::UpdateSelectionDetailControls() {
+    DesktopObject* object = SelectedObject();
+    if (includeButton_ && object) {
+        SetWindowTextString(includeButton_, object->includeInDesktop ? L"忽略" : L"带入");
+    }
+    if (includeAllButton_) {
+        const auto& objects = app_->Config().objects;
+        const bool anyIncluded = std::any_of(objects.begin(), objects.end(), [](const DesktopObject& item) {
+            return item.includeInDesktop;
+        });
+        SetWindowTextString(includeAllButton_, anyIncluded ? L"忽略全部" : L"带入全部");
+    }
+    if (iconSizeSlider_ && object) {
+        const int size = std::clamp(object->iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+        SendMessageW(iconSizeSlider_, TBM_SETPOS, TRUE, size);
+    }
+    if (iconSizeValue_ && object) {
+        const int size = std::clamp(object->iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+        SetWindowTextString(iconSizeValue_, std::to_wstring(size) + L" px");
+    }
 }
 
 void SettingsWindow::PopulateObjectList() {
@@ -839,10 +988,7 @@ void SettingsWindow::PopulateObjectList() {
             imageIndex = ImageList_AddIcon(objectImages_, icon);
             DestroyIcon(icon);
         }
-        std::wstring name = object.name;
-        if (!object.includeInDesktop) {
-            name += L"  [忽略]";
-        }
+        std::wstring name = ObjectListText(object);
         LVITEMW item{};
         item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM | LVIF_STATE;
         item.iItem = row;
@@ -856,6 +1002,41 @@ void SettingsWindow::PopulateObjectList() {
         ListView_InsertItem(objectList_, &item);
     }
     suppressNotifications_ = false;
+}
+
+void SettingsWindow::UpdateObjectListRow(int objectIndex) {
+    if (!objectList_ ||
+        objectIndex < 0 ||
+        objectIndex >= static_cast<int>(app_->Config().objects.size())) {
+        return;
+    }
+
+    const auto it = std::find(filteredObjects_.begin(), filteredObjects_.end(), objectIndex);
+    if (it == filteredObjects_.end()) {
+        return;
+    }
+
+    const int row = static_cast<int>(std::distance(filteredObjects_.begin(), it));
+    std::wstring text = ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)]);
+    ListView_SetItemText(objectList_, row, 0, text.data());
+    ListView_RedrawItems(objectList_, row, row);
+    UpdateWindow(objectList_);
+}
+
+void SettingsWindow::UpdateVisibleObjectRows() {
+    if (!objectList_) {
+        return;
+    }
+    for (int row = 0; row < static_cast<int>(filteredObjects_.size()); ++row) {
+        const int objectIndex = filteredObjects_[static_cast<size_t>(row)];
+        if (objectIndex < 0 || objectIndex >= static_cast<int>(app_->Config().objects.size())) {
+            continue;
+        }
+        std::wstring text = ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)]);
+        ListView_SetItemText(objectList_, row, 0, text.data());
+        ListView_RedrawItems(objectList_, row, row);
+    }
+    UpdateWindow(objectList_);
 }
 
 void SettingsWindow::PopulateCandidateList() {

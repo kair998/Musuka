@@ -5,6 +5,8 @@
 #include "Util.h"
 #include "WinUtil.h"
 
+#include <algorithm>
+#include <cmath>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -14,9 +16,13 @@ namespace {
 
 constexpr int ID_CONTEXT_OPEN = 2001;
 constexpr int ID_CONTEXT_OPEN_LOCATION = 2002;
-constexpr int ID_CONTEXT_RETURN_SETTINGS = 2003;
-constexpr int ID_CONTEXT_EXIT = 2004;
+constexpr int ID_CONTEXT_RUN_AS_ADMIN = 2003;
+constexpr int ID_CONTEXT_RETURN_SETTINGS = 2004;
+constexpr int ID_CONTEXT_EXIT = 2005;
 constexpr BYTE kAlphaThreshold = 20;
+constexpr int kLabelHeight = 36;
+constexpr int kLabelExtraWidth = 48;
+constexpr int kIconScaleStep = 24;
 
 bool ShellExecuteChecked(HWND owner,
                          const wchar_t* operation,
@@ -39,6 +45,34 @@ std::wstring ExplorerSelectParameter(const std::wstring& path) {
     return L"/select,\"" + path + L"\"";
 }
 
+RECT PreferredDesktopBounds() {
+    return RECT{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+}
+
+RECT RectFromRectF(const Gdiplus::RectF& rect) {
+    RECT result{
+        static_cast<LONG>(std::floor(rect.X)) - 4,
+        static_cast<LONG>(std::floor(rect.Y)) - 4,
+        static_cast<LONG>(std::ceil(rect.X + rect.Width)) + 4,
+        static_cast<LONG>(std::ceil(rect.Y + rect.Height)) + 4
+    };
+    return result;
+}
+
+bool RectFIntersectsRect(const Gdiplus::RectF& rect, const RECT& other) {
+    RECT native = RectFromRectF(rect);
+    RECT intersection{};
+    return IntersectRect(&intersection, &native, &other) != FALSE;
+}
+
+Gdiplus::RectF UnionBounds(const Gdiplus::RectF& left, const Gdiplus::RectF& right) {
+    const float x1 = std::min(left.X, right.X);
+    const float y1 = std::min(left.Y, right.Y);
+    const float x2 = std::max(left.X + left.Width, right.X + right.Width);
+    const float y2 = std::max(left.Y + left.Height, right.Y + right.Height);
+    return Gdiplus::RectF(x1, y1, x2 - x1, y2 - y1);
+}
+
 } // namespace
 
 DesktopWindow::DesktopWindow(App* app) : app_(app) {}
@@ -54,16 +88,15 @@ DesktopWindow::~DesktopWindow() {
 bool DesktopWindow::Create() {
     RegisterWindowClass();
 
-    const int width = GetSystemMetrics(SM_CXSCREEN);
-    const int height = GetSystemMetrics(SM_CYSCREEN);
-    hwnd_ = CreateWindowExW(WS_EX_APPWINDOW,
+    const RECT bounds = PreferredDesktopBounds();
+    hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                             L"MusukaDesktopWindow",
                             L"musuka desktop",
-                            WS_POPUP | WS_VISIBLE,
-                            0,
-                            0,
-                            width,
-                            height,
+                            WS_POPUP,
+                            bounds.left,
+                            bounds.top,
+                            bounds.right - bounds.left,
+                            bounds.bottom - bounds.top,
                             nullptr,
                             nullptr,
                             app_->Instance(),
@@ -75,9 +108,8 @@ bool DesktopWindow::Create() {
     LoadAssets();
     AutoArrangeMissingPositions();
     RecalculateRects();
-    ShowWindow(hwnd_, SW_SHOW);
+    PositionDesktopWindow();
     UpdateWindow(hwnd_);
-    SetForegroundWindow(hwnd_);
     return true;
 }
 
@@ -104,6 +136,20 @@ void DesktopWindow::RegisterWindowClass() {
     registered = true;
 }
 
+void DesktopWindow::PositionDesktopWindow() {
+    if (!hwnd_) {
+        return;
+    }
+    const RECT bounds = PreferredDesktopBounds();
+    SetWindowPos(hwnd_,
+                 nullptr,
+                 bounds.left,
+                 bounds.top,
+                 bounds.right - bounds.left,
+                 bounds.bottom - bounds.top,
+                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+}
+
 LRESULT CALLBACK DesktopWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     DesktopWindow* self = reinterpret_cast<DesktopWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -120,10 +166,19 @@ LRESULT CALLBACK DesktopWindow::WindowProc(HWND hwnd, UINT message, WPARAM wPara
 
 LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        return 1;
     case WM_PAINT:
         Paint();
         return 0;
     case WM_SIZE:
+        RecalculateRects();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return 0;
+    case WM_DISPLAYCHANGE:
+        PositionDesktopWindow();
         RecalculateRects();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
@@ -133,15 +188,27 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         const int itemIndex = HitTest(x, y);
         if (itemIndex >= 0) {
             draggingItem_ = itemIndex;
-            selectedObjectIndex_ = items_[static_cast<size_t>(itemIndex)].objectIndex;
-            DesktopObject& object = app_->Config().objects[static_cast<size_t>(selectedObjectIndex_)];
-            dragOffset_.x = x - object.x;
-            dragOffset_.y = y - object.y;
+            const int objectIndex = items_[static_cast<size_t>(itemIndex)].objectIndex;
+            if (!IsObjectSelected(objectIndex)) {
+                SetSingleSelection(objectIndex);
+                InvalidateRect(hwnd_, nullptr, FALSE);
+            }
+            dragStart_.x = x;
+            dragStart_.y = y;
+            dragOrigins_.clear();
+            for (int selectedIndex : selectedObjectIndices_) {
+                const DesktopObject& selectedObject = app_->Config().objects[static_cast<size_t>(selectedIndex)];
+                dragOrigins_.push_back(DragOrigin{selectedIndex, selectedObject.x, selectedObject.y});
+            }
             movedDuringDrag_ = false;
             SetCapture(hwnd_);
-            InvalidateRect(hwnd_, nullptr, FALSE);
         } else {
-            selectedObjectIndex_ = -1;
+            ClearSelection();
+            selectingBox_ = true;
+            selectionStart_.x = x;
+            selectionStart_.y = y;
+            selectionCurrent_ = selectionStart_;
+            SetCapture(hwnd_);
             InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
@@ -150,33 +217,70 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         if (draggingItem_ >= 0 && (wParam & MK_LBUTTON) != 0) {
             const int x = GET_X_LPARAM(lParam);
             const int y = GET_Y_LPARAM(lParam);
-            RenderItem& item = items_[static_cast<size_t>(draggingItem_)];
-            DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
-            const int newX = x - dragOffset_.x;
-            const int newY = y - dragOffset_.y;
-            if (object.x != newX || object.y != newY) {
-                object.x = newX;
-                object.y = newY;
+            const int dx = x - dragStart_.x;
+            const int dy = y - dragStart_.y;
+            std::vector<Gdiplus::RectF> oldBounds;
+            bool changed = false;
+            for (const auto& origin : dragOrigins_) {
+                const int renderIndex = FindItemByObjectIndex(origin.objectIndex);
+                if (renderIndex >= 0) {
+                    oldBounds.push_back(items_[static_cast<size_t>(renderIndex)].bounds);
+                }
+                DesktopObject& object = app_->Config().objects[static_cast<size_t>(origin.objectIndex)];
+                const int newX = origin.x + dx;
+                const int newY = origin.y + dy;
+                if (object.x != newX || object.y != newY) {
+                    object.x = newX;
+                    object.y = newY;
+                    changed = true;
+                }
+            }
+            if (changed) {
                 movedDuringDrag_ = true;
                 RecalculateRects();
-                InvalidateRect(hwnd_, nullptr, FALSE);
+                for (const auto& oldRect : oldBounds) {
+                    InvalidateRenderRect(oldRect);
+                }
+                for (const auto& origin : dragOrigins_) {
+                    const int renderIndex = FindItemByObjectIndex(origin.objectIndex);
+                    if (renderIndex >= 0) {
+                        InvalidateRenderItem(items_[static_cast<size_t>(renderIndex)]);
+                    }
+                }
             }
+        } else if (selectingBox_ && (wParam & MK_LBUTTON) != 0) {
+            const RECT oldRect = CurrentSelectionBoxRect();
+            selectionCurrent_.x = GET_X_LPARAM(lParam);
+            selectionCurrent_.y = GET_Y_LPARAM(lParam);
+            InvalidateSelectionBox(oldRect);
+            InvalidateSelectionBox(CurrentSelectionBoxRect());
         }
         return 0;
+    case WM_MOUSEWHEEL:
+        ScaleSelectedObjects(GET_WHEEL_DELTA_WPARAM(wParam));
+        return 0;
     case WM_LBUTTONUP:
-        if (draggingItem_ >= 0) {
+        if (selectingBox_) {
+            selectionCurrent_.x = GET_X_LPARAM(lParam);
+            selectionCurrent_.y = GET_Y_LPARAM(lParam);
+            SelectObjectsInBox();
+            selectingBox_ = false;
+            ReleaseCapture();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        } else if (draggingItem_ >= 0) {
             ReleaseCapture();
             if (movedDuringDrag_) {
                 SaveConfigQuietly();
             }
             draggingItem_ = -1;
             movedDuringDrag_ = false;
+            dragOrigins_.clear();
         }
         return 0;
     case WM_LBUTTONDBLCLK: {
         const int itemIndex = HitTest(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
         if (itemIndex >= 0) {
-            selectedObjectIndex_ = items_[static_cast<size_t>(itemIndex)].objectIndex;
+            SetSingleSelection(items_[static_cast<size_t>(itemIndex)].objectIndex);
             OpenObject(selectedObjectIndex_);
         }
         return 0;
@@ -186,9 +290,14 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         const int y = GET_Y_LPARAM(lParam);
         const int itemIndex = HitTest(x, y);
         if (itemIndex >= 0) {
-            selectedObjectIndex_ = items_[static_cast<size_t>(itemIndex)].objectIndex;
+            const int objectIndex = items_[static_cast<size_t>(itemIndex)].objectIndex;
+            if (!IsObjectSelected(objectIndex)) {
+                SetSingleSelection(objectIndex);
+            } else {
+                selectedObjectIndex_ = objectIndex;
+            }
         } else {
-            selectedObjectIndex_ = -1;
+            ClearSelection();
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
         POINT point{x, y};
@@ -206,6 +315,11 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         case ID_CONTEXT_OPEN_LOCATION:
             if (selectedObjectIndex_ >= 0) {
                 OpenContainingLocation(selectedObjectIndex_);
+            }
+            break;
+        case ID_CONTEXT_RUN_AS_ADMIN:
+            if (selectedObjectIndex_ >= 0) {
+                RunObjectAsAdmin(selectedObjectIndex_);
             }
             break;
         case ID_CONTEXT_RETURN_SETTINGS:
@@ -256,12 +370,14 @@ void DesktopWindow::LoadAssets() {
             object.selectedCandidate >= static_cast<int>(object.candidates.size())) {
             object.selectedCandidate = 0;
         }
+        const ImageCandidate* selectedCandidate = &object.candidates[static_cast<size_t>(object.selectedCandidate)];
         std::unique_ptr<Gdiplus::Bitmap> bitmap =
-            LoadBitmapFromPath(ToAbsoluteAppPath(object.candidates[static_cast<size_t>(object.selectedCandidate)].internalPath));
+            LoadBitmapFromPath(ToAbsoluteAppPath(selectedCandidate->internalPath));
         if (!bitmap) {
             for (const auto& candidate : object.candidates) {
                 bitmap = LoadBitmapFromPath(ToAbsoluteAppPath(candidate.internalPath));
                 if (bitmap) {
+                    selectedCandidate = &candidate;
                     break;
                 }
             }
@@ -272,10 +388,18 @@ void DesktopWindow::LoadAssets() {
 
         RenderItem item;
         item.objectIndex = i;
-        item.hasAlpha = BitmapHasAlpha(bitmap.get());
+        item.showLabel = selectedCandidate->originalIcon;
+        item.label = object.name;
+        item.layerPriority = selectedCandidate->layerPriority;
         item.bitmap = std::move(bitmap);
         items_.push_back(std::move(item));
     }
+    std::stable_sort(items_.begin(), items_.end(), [](const RenderItem& left, const RenderItem& right) {
+        if (left.layerPriority != right.layerPriority) {
+            return left.layerPriority < right.layerPriority;
+        }
+        return left.objectIndex < right.objectIndex;
+    });
 }
 
 void DesktopWindow::AutoArrangeMissingPositions() {
@@ -283,8 +407,8 @@ void DesktopWindow::AutoArrangeMissingPositions() {
     GetClientRect(hwnd_, &rc);
     const int startX = 40;
     const int startY = 40;
-    const int stepX = kDesktopIconMaxSize + 34;
-    const int stepY = kDesktopIconMaxSize + 34;
+    const int stepX = kDesktopIconMaxSize + 76;
+    const int stepY = kDesktopIconMaxSize + kLabelHeight + 42;
     int x = startX;
     int y = startY;
     bool changed = false;
@@ -296,7 +420,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
             object.y = y;
             changed = true;
             y += stepY;
-            if (y + kDesktopIconMaxSize > rc.bottom - 20) {
+            if (y + kDesktopIconMaxSize + kLabelHeight > rc.bottom - 20) {
                 y = startY;
                 x += stepX;
             }
@@ -309,12 +433,31 @@ void DesktopWindow::AutoArrangeMissingPositions() {
 
 void DesktopWindow::RecalculateRects() {
     for (auto& item : items_) {
-        DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
-        item.rect = CalculateContainRect(item.bitmap.get(),
-                                         static_cast<float>(object.x),
-                                         static_cast<float>(object.y),
-                                         static_cast<float>(kDesktopIconMaxSize),
-                                         static_cast<float>(kDesktopIconMaxSize));
+        RecalculateItemRect(item);
+    }
+}
+
+void DesktopWindow::RecalculateItemRect(RenderItem& item) {
+    DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
+    object.iconSize = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+    const float iconSize = static_cast<float>(object.iconSize);
+    item.rect = CalculateContainRect(item.bitmap.get(),
+                                     static_cast<float>(object.x),
+                                     static_cast<float>(object.y),
+                                     iconSize,
+                                     iconSize);
+    item.bounds = Gdiplus::RectF(static_cast<float>(object.x),
+                                 static_cast<float>(object.y),
+                                 iconSize,
+                                 iconSize);
+    if (item.showLabel) {
+        item.labelRect = Gdiplus::RectF(static_cast<float>(object.x - kLabelExtraWidth / 2),
+                                        static_cast<float>(object.y + object.iconSize + 4),
+                                        static_cast<float>(object.iconSize + kLabelExtraWidth),
+                                        static_cast<float>(kLabelHeight));
+        item.bounds = UnionBounds(item.bounds, item.labelRect);
+    } else {
+        item.labelRect = Gdiplus::RectF();
     }
 }
 
@@ -323,26 +466,44 @@ void DesktopWindow::Paint() {
     HDC dc = BeginPaint(hwnd_, &ps);
     RECT rc{};
     GetClientRect(hwnd_, &rc);
+    RECT dirty = ps.rcPaint;
+    if (dirty.right <= dirty.left || dirty.bottom <= dirty.top) {
+        dirty = rc;
+    }
+    const int dirtyWidth = dirty.right - dirty.left;
+    const int dirtyHeight = dirty.bottom - dirty.top;
 
     HDC memory = CreateCompatibleDC(dc);
-    HBITMAP buffer = CreateCompatibleBitmap(dc, rc.right - rc.left, rc.bottom - rc.top);
+    HBITMAP buffer = CreateCompatibleBitmap(dc, dirtyWidth, dirtyHeight);
     HGDIOBJ oldBitmap = SelectObject(memory, buffer);
 
     Gdiplus::Graphics graphics(memory);
+    graphics.TranslateTransform(static_cast<Gdiplus::REAL>(-dirty.left),
+                                static_cast<Gdiplus::REAL>(-dirty.top));
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
     graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
     DrawBackground(graphics, rc);
 
     for (const auto& item : items_) {
+        if (!RectFIntersectsRect(item.bounds, dirty)) {
+            continue;
+        }
         graphics.DrawImage(item.bitmap.get(), item.rect);
-        if (item.objectIndex == selectedObjectIndex_) {
+        if (IsObjectSelected(item.objectIndex)) {
             Gdiplus::Pen pen(Gdiplus::Color(210, 40, 120, 230), 2.0f);
             graphics.DrawRectangle(&pen, item.rect);
         }
     }
+    DrawSelectionBox(graphics);
     graphics.Flush();
 
-    BitBlt(dc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memory, 0, 0, SRCCOPY);
+    for (const auto& item : items_) {
+        if (item.showLabel && RectFIntersectsRect(item.labelRect, dirty)) {
+            DrawItemLabel(memory, item, dirty);
+        }
+    }
+
+    BitBlt(dc, dirty.left, dirty.top, dirtyWidth, dirtyHeight, memory, 0, 0, SRCCOPY);
     SelectObject(memory, oldBitmap);
     DeleteObject(buffer);
     DeleteDC(memory);
@@ -367,14 +528,174 @@ void DesktopWindow::DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc) 
     graphics.Clear(color);
 }
 
+void DesktopWindow::DrawItemLabel(HDC dc, const RenderItem& item, const RECT& dirtyRect) {
+    RECT labelRect = RectFromRectF(item.labelRect);
+    labelRect.left -= dirtyRect.left;
+    labelRect.right -= dirtyRect.left;
+    labelRect.top -= dirtyRect.top;
+    labelRect.bottom -= dirtyRect.top;
+
+    if (IsObjectSelected(item.objectIndex)) {
+        HBRUSH brush = CreateSolidBrush(RGB(45, 95, 175));
+        FillRect(dc, &labelRect, brush);
+        DeleteObject(brush);
+    }
+
+    SetBkMode(dc, TRANSPARENT);
+    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    HGDIOBJ oldFont = SelectObject(dc, font);
+    RECT shadowRect = labelRect;
+    OffsetRect(&shadowRect, 1, 1);
+    SetTextColor(dc, RGB(0, 0, 0));
+    DrawTextW(dc,
+              item.label.c_str(),
+              -1,
+              &shadowRect,
+              DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+    SetTextColor(dc, RGB(255, 255, 255));
+    DrawTextW(dc,
+              item.label.c_str(),
+              -1,
+              &labelRect,
+              DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+}
+
+void DesktopWindow::DrawSelectionBox(Gdiplus::Graphics& graphics) {
+    if (!selectingBox_) {
+        return;
+    }
+    const RECT rect = CurrentSelectionBoxRect();
+    const Gdiplus::RectF box(static_cast<Gdiplus::REAL>(rect.left),
+                             static_cast<Gdiplus::REAL>(rect.top),
+                             static_cast<Gdiplus::REAL>(rect.right - rect.left),
+                             static_cast<Gdiplus::REAL>(rect.bottom - rect.top));
+    Gdiplus::SolidBrush brush(Gdiplus::Color(44, 78, 136, 210));
+    Gdiplus::Pen pen(Gdiplus::Color(180, 70, 130, 220), 1.0f);
+    graphics.FillRectangle(&brush, box);
+    graphics.DrawRectangle(&pen, box);
+}
+
 int DesktopWindow::HitTest(int x, int y) const {
     for (int i = static_cast<int>(items_.size()) - 1; i >= 0; --i) {
         const RenderItem& item = items_[static_cast<size_t>(i)];
         if (AlphaHitTest(item.bitmap.get(), item.rect, x, y, kAlphaThreshold)) {
             return i;
         }
+        if (item.showLabel &&
+            x >= item.labelRect.X &&
+            y >= item.labelRect.Y &&
+            x < item.labelRect.X + item.labelRect.Width &&
+            y < item.labelRect.Y + item.labelRect.Height) {
+            return i;
+        }
     }
     return -1;
+}
+
+int DesktopWindow::FindItemByObjectIndex(int objectIndex) const {
+    for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
+        if (items_[static_cast<size_t>(i)].objectIndex == objectIndex) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool DesktopWindow::IsObjectSelected(int objectIndex) const {
+    return std::find(selectedObjectIndices_.begin(), selectedObjectIndices_.end(), objectIndex) !=
+        selectedObjectIndices_.end();
+}
+
+void DesktopWindow::SetSingleSelection(int objectIndex) {
+    selectedObjectIndex_ = objectIndex;
+    selectedObjectIndices_.clear();
+    if (objectIndex >= 0) {
+        selectedObjectIndices_.push_back(objectIndex);
+    }
+}
+
+void DesktopWindow::ClearSelection() {
+    selectedObjectIndex_ = -1;
+    selectedObjectIndices_.clear();
+}
+
+RECT DesktopWindow::CurrentSelectionBoxRect() const {
+    RECT rect{
+        std::min(selectionStart_.x, selectionCurrent_.x),
+        std::min(selectionStart_.y, selectionCurrent_.y),
+        std::max(selectionStart_.x, selectionCurrent_.x),
+        std::max(selectionStart_.y, selectionCurrent_.y)
+    };
+    return rect;
+}
+
+void DesktopWindow::SelectObjectsInBox() {
+    ClearSelection();
+    const RECT rect = CurrentSelectionBoxRect();
+    if ((rect.right - rect.left) < 4 || (rect.bottom - rect.top) < 4) {
+        return;
+    }
+    for (const auto& item : items_) {
+        RECT native = RectFromRectF(item.bounds);
+        RECT intersection{};
+        if (IntersectRect(&intersection, &native, &rect)) {
+            selectedObjectIndices_.push_back(item.objectIndex);
+        }
+    }
+    if (!selectedObjectIndices_.empty()) {
+        selectedObjectIndex_ = selectedObjectIndices_.front();
+    }
+}
+
+void DesktopWindow::InvalidateRenderItem(const RenderItem& item) {
+    InvalidateRenderRect(item.bounds);
+}
+
+void DesktopWindow::InvalidateRenderRect(const Gdiplus::RectF& rect) {
+    RECT native = RectFromRectF(rect);
+    InvalidateRect(hwnd_, &native, FALSE);
+}
+
+void DesktopWindow::InvalidateSelectionBox(const RECT& rect) {
+    RECT expanded = rect;
+    InflateRect(&expanded, 3, 3);
+    InvalidateRect(hwnd_, &expanded, FALSE);
+}
+
+void DesktopWindow::ScaleSelectedObjects(int delta) {
+    if (selectedObjectIndices_.empty() || delta == 0) {
+        return;
+    }
+    const int direction = delta > 0 ? 1 : -1;
+    bool changed = false;
+    std::vector<Gdiplus::RectF> oldBounds;
+    for (int objectIndex : selectedObjectIndices_) {
+        const int renderIndex = FindItemByObjectIndex(objectIndex);
+        if (renderIndex >= 0) {
+            oldBounds.push_back(items_[static_cast<size_t>(renderIndex)].bounds);
+        }
+        DesktopObject& object = app_->Config().objects[static_cast<size_t>(objectIndex)];
+        const int oldSize = object.iconSize;
+        object.iconSize = std::clamp(object.iconSize + direction * kIconScaleStep,
+                                     kDesktopIconMinSize,
+                                     kDesktopIconMaxSize);
+        changed = changed || object.iconSize != oldSize;
+    }
+    if (!changed) {
+        return;
+    }
+    RecalculateRects();
+    for (const auto& oldRect : oldBounds) {
+        InvalidateRenderRect(oldRect);
+    }
+    for (int objectIndex : selectedObjectIndices_) {
+        const int renderIndex = FindItemByObjectIndex(objectIndex);
+        if (renderIndex >= 0) {
+            InvalidateRenderItem(items_[static_cast<size_t>(renderIndex)]);
+        }
+    }
+    SaveConfigQuietly();
 }
 
 void DesktopWindow::OpenObject(int objectIndex) {
@@ -405,16 +726,62 @@ void DesktopWindow::OpenContainingLocation(int objectIndex) {
     ShellExecuteChecked(hwnd_, L"open", L"explorer.exe", ExplorerSelectParameter(object.path));
 }
 
+void DesktopWindow::RunObjectAsAdmin(int objectIndex) {
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(app_->Config().objects.size())) {
+        return;
+    }
+    const DesktopObject& object = app_->Config().objects[static_cast<size_t>(objectIndex)];
+    if (object.type == DesktopObjectType::ThisPC || object.type == DesktopObjectType::RecycleBin) {
+        ShowError(hwnd_, L"该系统对象不支持以管理员身份运行。");
+        return;
+    }
+    ShellExecuteChecked(hwnd_, L"runas", object.path);
+}
+
 void DesktopWindow::ShowContextMenu(int x, int y) {
     HMENU menu = CreatePopupMenu();
     const bool hasSelection = selectedObjectIndex_ >= 0;
+    bool canRunAsAdmin = false;
+    if (hasSelection && selectedObjectIndex_ < static_cast<int>(app_->Config().objects.size())) {
+        const DesktopObject& object = app_->Config().objects[static_cast<size_t>(selectedObjectIndex_)];
+        canRunAsAdmin = object.type != DesktopObjectType::ThisPC &&
+                        object.type != DesktopObjectType::RecycleBin;
+    }
     AppendMenuW(menu, MF_STRING | (hasSelection ? MF_ENABLED : MF_GRAYED), ID_CONTEXT_OPEN, L"打开");
     AppendMenuW(menu, MF_STRING | (hasSelection ? MF_ENABLED : MF_GRAYED), ID_CONTEXT_OPEN_LOCATION, L"打开所在位置");
+    AppendMenuW(menu,
+                MF_STRING | (canRunAsAdmin ? MF_ENABLED : MF_GRAYED),
+                ID_CONTEXT_RUN_AS_ADMIN,
+                L"以管理员身份运行");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, ID_CONTEXT_RETURN_SETTINGS, L"返回 settings");
     AppendMenuW(menu, MF_STRING, ID_CONTEXT_EXIT, L"退出 musuka");
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, x, y, 0, hwnd_, nullptr);
+    const UINT command = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, x, y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+    switch (command) {
+    case ID_CONTEXT_OPEN:
+        if (selectedObjectIndex_ >= 0) {
+            OpenObject(selectedObjectIndex_);
+        }
+        break;
+    case ID_CONTEXT_OPEN_LOCATION:
+        if (selectedObjectIndex_ >= 0) {
+            OpenContainingLocation(selectedObjectIndex_);
+        }
+        break;
+    case ID_CONTEXT_RUN_AS_ADMIN:
+        if (selectedObjectIndex_ >= 0) {
+            RunObjectAsAdmin(selectedObjectIndex_);
+        }
+        break;
+    case ID_CONTEXT_RETURN_SETTINGS:
+        SaveConfigQuietly();
+        app_->ReturnToSettings();
+        break;
+    case ID_CONTEXT_EXIT:
+        app_->Exit();
+        break;
+    }
 }
 
 void DesktopWindow::SaveConfigQuietly() {

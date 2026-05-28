@@ -7,6 +7,28 @@
 
 namespace musuka {
 
+namespace {
+
+HFONT LargerUiFont() {
+    static HFONT font = []() -> HFONT {
+        LOGFONTW logFont{};
+        HFONT guiFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        GetObjectW(guiFont, sizeof(logFont), &logFont);
+        HDC dc = GetDC(nullptr);
+        const int dpiY = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
+        if (dc) {
+            ReleaseDC(nullptr, dc);
+        }
+        logFont.lfHeight = -MulDiv(11, dpiY, 72);
+        logFont.lfWeight = FW_NORMAL;
+        wcscpy_s(logFont.lfFaceName, L"Segoe UI");
+        return CreateFontIndirectW(&logFont);
+    }();
+    return font ? font : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+}
+
+} // namespace
+
 void ShowError(HWND owner, const std::wstring& message) {
     MessageBoxW(owner, message.c_str(), L"musuka", MB_OK | MB_ICONERROR);
 }
@@ -16,8 +38,7 @@ void ShowInfo(HWND owner, const std::wstring& message) {
 }
 
 void ApplyDefaultFont(HWND hwnd) {
-    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(LargerUiFont()), TRUE);
 }
 
 void CenterWindowOnScreen(HWND hwnd) {

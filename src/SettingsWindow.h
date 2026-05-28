@@ -50,11 +50,17 @@ private:
     void ImportSingleImage();
     void ImportImageFolder();
     void ToggleIncludeSelected();
+    void ToggleIncludeAll();
     void ReplaceSelectedImage();
     void ChooseSolidColor();
+    void OnIconSizeSliderChanged();
 
     bool AddCandidateFromFile(DesktopObject& object, const std::wstring& imagePath, std::wstring& error);
+    void RefreshSelectedObjectControls();
+    void UpdateSelectionDetailControls();
     void PopulateObjectList();
+    void UpdateObjectListRow(int objectIndex);
+    void UpdateVisibleObjectRows();
     void PopulateCandidateList();
     void DrawPreview(HWND hwnd);
     void DrawColorPreview(HDC dc, const RECT& rect);
@@ -78,6 +84,10 @@ private:
     HWND candidateList_ = nullptr;
     HWND previewPane_ = nullptr;
     HWND colorPreview_ = nullptr;
+    HWND includeButton_ = nullptr;
+    HWND includeAllButton_ = nullptr;
+    HWND iconSizeSlider_ = nullptr;
+    HWND iconSizeValue_ = nullptr;
 
     HIMAGELIST objectImages_ = nullptr;
     HIMAGELIST candidateImages_ = nullptr;

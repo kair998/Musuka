@@ -9,6 +9,7 @@ namespace musuka {
 
 enum class DesktopObjectType {
     Shortcut,
+    File,
     Folder,
     ThisPC,
     RecycleBin
@@ -24,11 +25,18 @@ enum class BackgroundSource {
     SolidColor
 };
 
+constexpr int kDesktopIconMinSize = 48;
+constexpr int kDesktopIconDefaultSize = 128;
+constexpr int kDesktopIconMaxSize = 512;
+constexpr int kDefaultImageLayerPriority = 0;
+constexpr int kImportedImageLayerPriority = 10;
+
 struct ImageCandidate {
     std::wstring displayName;
     std::wstring originalPath;
     std::wstring internalPath;
     bool originalIcon = false;
+    int layerPriority = kDefaultImageLayerPriority;
 };
 
 struct DesktopObject {
@@ -40,6 +48,7 @@ struct DesktopObject {
     bool includeInDesktop = true;
     int x = -1;
     int y = -1;
+    int iconSize = kDesktopIconDefaultSize;
     int selectedCandidate = 0;
     std::vector<ImageCandidate> candidates;
 };
@@ -57,6 +66,8 @@ inline const wchar_t* ToString(DesktopObjectType type) {
     switch (type) {
     case DesktopObjectType::Shortcut:
         return L"shortcut";
+    case DesktopObjectType::File:
+        return L"file";
     case DesktopObjectType::Folder:
         return L"folder";
     case DesktopObjectType::ThisPC:
@@ -68,6 +79,9 @@ inline const wchar_t* ToString(DesktopObjectType type) {
 }
 
 inline DesktopObjectType DesktopObjectTypeFromString(const std::wstring& value) {
+    if (value == L"file") {
+        return DesktopObjectType::File;
+    }
     if (value == L"folder") {
         return DesktopObjectType::Folder;
     }
@@ -114,4 +128,3 @@ inline std::wstring OpenShellIdForObject(const DesktopObject& object) {
 }
 
 } // namespace musuka
-
