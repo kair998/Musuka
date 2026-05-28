@@ -865,11 +865,13 @@ void SettingsWindow::ReplaceSelectedImage() {
         return;
     }
     object->selectedCandidate = selectedCandidateIndex_;
+    ApplyPreferredIconSizeForSelectedCandidate(*object);
     SaveConfigQuietly();
     if (previewPane_) {
         InvalidateRect(previewPane_, nullptr, TRUE);
     }
     PopulateCandidateList();
+    UpdateSelectionDetailControls();
 }
 
 void SettingsWindow::OnIconSizeSliderChanged() {

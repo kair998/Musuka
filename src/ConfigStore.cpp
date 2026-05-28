@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <utility>
 
 namespace musuka {
 
@@ -107,7 +108,7 @@ DesktopObject ObjectFromJson(const JsonValue& value) {
 
 JsonValue ConfigToJson(const AppConfig& config) {
     JsonValue::Object root;
-    root["version"] = JsonValue::Number(1);
+    root["version"] = JsonValue::Number(2);
     root["desktop_path"] = WideStringValue(config.desktopPath);
     root["desktop_mode"] = WideStringValue(ToString(config.desktopMode));
     root["background_source"] = WideStringValue(ToString(config.backgroundSource));
@@ -123,6 +124,7 @@ JsonValue ConfigToJson(const AppConfig& config) {
 }
 
 void ConfigFromJson(const JsonValue& root, AppConfig& config) {
+    const int version = static_cast<int>(root.At("version").AsNumber(1));
     config.desktopPath = WideFromValue(root.At("desktop_path"));
     config.desktopMode = DesktopModeFromString(WideFromValue(root.At("desktop_mode")));
     config.backgroundSource = BackgroundSourceFromString(WideFromValue(root.At("background_source")));
@@ -130,7 +132,11 @@ void ConfigFromJson(const JsonValue& root, AppConfig& config) {
     config.systemWallpaperPath = WideFromValue(root.At("system_wallpaper_path"));
     config.objects.clear();
     for (const auto& item : root.At("objects").AsArray()) {
-        config.objects.push_back(ObjectFromJson(item));
+        DesktopObject object = ObjectFromJson(item);
+        if (version < 2) {
+            ApplyPreferredIconSizeForSelectedCandidate(object);
+        }
+        config.objects.push_back(std::move(object));
     }
 }
 

@@ -289,6 +289,7 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
         }
     }
 
+    const bool wasMissingCandidates = object.candidates.empty();
     if (!HasOriginalIconCandidate(object) && FileExists(originalIconPath)) {
         ImageCandidate candidate;
         candidate.displayName = L"原始图标";
@@ -297,6 +298,9 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
         candidate.originalIcon = true;
         object.candidates.insert(object.candidates.begin(), std::move(candidate));
         object.selectedCandidate = 0;
+        if (wasMissingCandidates) {
+            ApplyPreferredIconSizeForSelectedCandidate(object);
+        }
     }
 
     if (!DirectoryExists(defaultDir)) {

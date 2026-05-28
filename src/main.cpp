@@ -6,6 +6,8 @@
 #include <objbase.h>
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
+    SetProcessDPIAware();
+
     HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(comResult)) {
         return 1;

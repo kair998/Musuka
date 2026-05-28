@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -25,8 +26,10 @@ enum class BackgroundSource {
     SolidColor
 };
 
-constexpr int kDesktopIconMinSize = 48;
-constexpr int kDesktopIconDefaultSize = 128;
+constexpr int kDesktopIconMinSize = 32;
+constexpr int kNativeIconDefaultSize = 32;
+constexpr int kReplacementImageDefaultSize = 96;
+constexpr int kDesktopIconDefaultSize = kReplacementImageDefaultSize;
 constexpr int kDesktopIconMaxSize = 512;
 constexpr int kDefaultImageLayerPriority = 0;
 constexpr int kImportedImageLayerPriority = 10;
@@ -38,6 +41,10 @@ struct ImageCandidate {
     bool originalIcon = false;
     int layerPriority = kDefaultImageLayerPriority;
 };
+
+inline int PreferredIconSizeForCandidate(const ImageCandidate& candidate) {
+    return candidate.originalIcon ? kNativeIconDefaultSize : kReplacementImageDefaultSize;
+}
 
 struct DesktopObject {
     std::wstring id;
@@ -52,6 +59,23 @@ struct DesktopObject {
     int selectedCandidate = 0;
     std::vector<ImageCandidate> candidates;
 };
+
+inline const ImageCandidate* SelectedCandidateForObject(const DesktopObject& object) {
+    if (object.selectedCandidate < 0 ||
+        object.selectedCandidate >= static_cast<int>(object.candidates.size())) {
+        return nullptr;
+    }
+    return &object.candidates[static_cast<std::size_t>(object.selectedCandidate)];
+}
+
+inline int PreferredIconSizeForObject(const DesktopObject& object) {
+    const ImageCandidate* candidate = SelectedCandidateForObject(object);
+    return candidate ? PreferredIconSizeForCandidate(*candidate) : kDesktopIconDefaultSize;
+}
+
+inline void ApplyPreferredIconSizeForSelectedCandidate(DesktopObject& object) {
+    object.iconSize = PreferredIconSizeForObject(object);
+}
 
 struct AppConfig {
     std::wstring desktopPath;

@@ -23,6 +23,9 @@ constexpr BYTE kAlphaThreshold = 20;
 constexpr int kLabelHeight = 36;
 constexpr int kLabelExtraWidth = 48;
 constexpr int kIconScaleStep = 24;
+constexpr int kDesktopMargin = 24;
+constexpr int kAutoArrangeGap = 16;
+constexpr int kAutoArrangeScanStep = 16;
 
 bool ShellExecuteChecked(HWND owner,
                          const wchar_t* operation,
@@ -73,6 +76,82 @@ Gdiplus::RectF UnionBounds(const Gdiplus::RectF& left, const Gdiplus::RectF& rig
     return Gdiplus::RectF(x1, y1, x2 - x1, y2 - y1);
 }
 
+int RectWidth(const RECT& rect) {
+    return std::max(0L, rect.right - rect.left);
+}
+
+int RectHeight(const RECT& rect) {
+    return std::max(0L, rect.bottom - rect.top);
+}
+
+RECT InflateCopy(RECT rect, int amount) {
+    InflateRect(&rect, amount, amount);
+    return rect;
+}
+
+RECT PlacementBounds(const DesktopObject& object, bool showLabel, int x, int y) {
+    const int size = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+    const int labelOffset = showLabel ? kLabelExtraWidth / 2 : 0;
+    const int labelHeight = showLabel ? kLabelHeight + 4 : 0;
+    return RECT{
+        x - labelOffset,
+        y,
+        x + size + labelOffset,
+        y + size + labelHeight
+    };
+}
+
+bool RectInside(const RECT& rect, const RECT& bounds) {
+    return rect.left >= bounds.left &&
+           rect.top >= bounds.top &&
+           rect.right <= bounds.right &&
+           rect.bottom <= bounds.bottom;
+}
+
+bool RectIntersectsAny(const RECT& rect, const std::vector<RECT>& occupied) {
+    for (const auto& existing : occupied) {
+        RECT intersection{};
+        if (IntersectRect(&intersection, &rect, &existing)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TryFindPlacement(const DesktopObject& object,
+                      bool showLabel,
+                      const RECT& client,
+                      const std::vector<RECT>& occupied,
+                      POINT& point) {
+    const int width = RectWidth(client);
+    const int height = RectHeight(client);
+    const int size = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+    const int labelOffset = showLabel ? kLabelExtraWidth / 2 : 0;
+    const int labelHeight = showLabel ? kLabelHeight + 4 : 0;
+    const int minX = kDesktopMargin + labelOffset;
+    const int minY = kDesktopMargin;
+    const int maxX = width - kDesktopMargin - size - labelOffset;
+    const int maxY = height - kDesktopMargin - size - labelHeight;
+    if (maxX < minX || maxY < minY) {
+        return false;
+    }
+
+    for (int x = minX; x <= maxX; x += kAutoArrangeScanStep) {
+        for (int y = minY; y <= maxY; y += kAutoArrangeScanStep) {
+            const RECT bounds = PlacementBounds(object, showLabel, x, y);
+            if (!RectInside(bounds, client)) {
+                continue;
+            }
+            if (RectIntersectsAny(InflateCopy(bounds, kAutoArrangeGap), occupied)) {
+                continue;
+            }
+            point = POINT{x, y};
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 DesktopWindow::DesktopWindow(App* app) : app_(app) {}
@@ -106,6 +185,7 @@ bool DesktopWindow::Create() {
     }
 
     LoadAssets();
+    RecalculateRects();
     AutoArrangeMissingPositions();
     RecalculateRects();
     PositionDesktopWindow();
@@ -175,10 +255,14 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
     case WM_SIZE:
         RecalculateRects();
+        AutoArrangeMissingPositions();
+        RecalculateRects();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_DISPLAYCHANGE:
         PositionDesktopWindow();
+        RecalculateRects();
+        AutoArrangeMissingPositions();
         RecalculateRects();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
@@ -405,27 +489,85 @@ void DesktopWindow::LoadAssets() {
 void DesktopWindow::AutoArrangeMissingPositions() {
     RECT rc{};
     GetClientRect(hwnd_, &rc);
-    const int startX = 40;
-    const int startY = 40;
-    const int stepX = kDesktopIconMaxSize + 76;
-    const int stepY = kDesktopIconMaxSize + kLabelHeight + 42;
-    int x = startX;
-    int y = startY;
+    if (RectWidth(rc) <= kDesktopMargin * 2 || RectHeight(rc) <= kDesktopMargin * 2) {
+        return;
+    }
+
+    RecalculateRects();
+
+    std::vector<RECT> occupied;
+    std::vector<int> toPlace;
     bool changed = false;
 
-    for (auto& item : items_) {
+    for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
+        const auto& item = items_[static_cast<size_t>(i)];
         DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
-        if (object.x < 0 || object.y < 0) {
-            object.x = x;
-            object.y = y;
-            changed = true;
-            y += stepY;
-            if (y + kDesktopIconMaxSize + kLabelHeight > rc.bottom - 20) {
-                y = startY;
-                x += stepX;
-            }
+        const RECT bounds = RectFromRectF(item.bounds);
+        const RECT paddedBounds = InflateCopy(bounds, kAutoArrangeGap);
+        if (object.x < 0 ||
+            object.y < 0 ||
+            !RectInside(bounds, rc) ||
+            RectIntersectsAny(paddedBounds, occupied)) {
+            toPlace.push_back(i);
+        } else {
+            occupied.push_back(paddedBounds);
         }
     }
+
+    if (toPlace.size() > std::max<size_t>(1, items_.size() / 5)) {
+        toPlace.clear();
+        occupied.clear();
+        for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
+            toPlace.push_back(i);
+        }
+    }
+
+    std::stable_sort(toPlace.begin(), toPlace.end(), [&](int left, int right) {
+        const auto& leftItem = items_[static_cast<size_t>(left)];
+        const auto& rightItem = items_[static_cast<size_t>(right)];
+        if (leftItem.showLabel != rightItem.showLabel) {
+            return leftItem.showLabel;
+        }
+        return leftItem.objectIndex < rightItem.objectIndex;
+    });
+
+    for (int itemIndex : toPlace) {
+        auto& item = items_[static_cast<size_t>(itemIndex)];
+        DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
+        const int originalX = object.x;
+        const int originalY = object.y;
+        const int originalSize = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
+
+        std::vector<int> sizes;
+        for (int size = originalSize; size > kDesktopIconMinSize; size -= kIconScaleStep) {
+            sizes.push_back(size);
+        }
+        sizes.push_back(kDesktopIconMinSize);
+
+        bool placed = false;
+        POINT placement{};
+        for (int size : sizes) {
+            object.iconSize = size;
+            if (TryFindPlacement(object, item.showLabel, rc, occupied, placement)) {
+                placed = true;
+                break;
+            }
+        }
+
+        if (!placed) {
+            object.iconSize = originalSize;
+            continue;
+        }
+
+        object.x = placement.x;
+        object.y = placement.y;
+        occupied.push_back(InflateCopy(PlacementBounds(object, item.showLabel, object.x, object.y),
+                                       kAutoArrangeGap));
+        if (object.x != originalX || object.y != originalY || object.iconSize != originalSize) {
+            changed = true;
+        }
+    }
+
     if (changed) {
         SaveConfigQuietly();
     }
