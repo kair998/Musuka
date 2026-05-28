@@ -57,6 +57,7 @@ struct DesktopObject {
     int y = -1;
     int iconSize = kDesktopIconDefaultSize;
     int selectedCandidate = 0;
+    std::wstring selectedImageInternalPath;
     std::vector<ImageCandidate> candidates;
 };
 
@@ -75,6 +76,22 @@ inline int PreferredIconSizeForObject(const DesktopObject& object) {
 
 inline void ApplyPreferredIconSizeForSelectedCandidate(DesktopObject& object) {
     object.iconSize = PreferredIconSizeForObject(object);
+}
+
+inline void SelectObjectCandidate(DesktopObject& object, int candidateIndex) {
+    object.selectedCandidate = candidateIndex;
+    if (candidateIndex >= 0 &&
+        candidateIndex < static_cast<int>(object.candidates.size())) {
+        object.selectedImageInternalPath =
+            object.candidates[static_cast<std::size_t>(candidateIndex)].internalPath;
+    } else {
+        object.selectedImageInternalPath.clear();
+    }
+}
+
+inline void SelectExternalCandidate(DesktopObject& object, const ImageCandidate& candidate) {
+    object.selectedCandidate = -1;
+    object.selectedImageInternalPath = candidate.internalPath;
 }
 
 struct AppConfig {

@@ -79,14 +79,20 @@ bool IsSharedDefaultCandidate(const ImageCandidate& candidate, const std::wstrin
     return PathIsInsideDirectory(ToAbsoluteAppPath(candidate.internalPath), defaultDir);
 }
 
+bool SameInternalPath(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    return NormalizePathForCompare(ToAbsoluteAppPath(left)) ==
+           NormalizePathForCompare(ToAbsoluteAppPath(right));
+}
+
 int FindCandidateByInternalPath(const DesktopObject& object, const std::wstring& internalPath) {
     if (internalPath.empty()) {
         return -1;
     }
-    const std::wstring normalized = NormalizePathForCompare(ToAbsoluteAppPath(internalPath));
     for (int i = 0; i < static_cast<int>(object.candidates.size()); ++i) {
-        if (NormalizePathForCompare(ToAbsoluteAppPath(object.candidates[static_cast<size_t>(i)].internalPath)) ==
-            normalized) {
+        if (SameInternalPath(object.candidates[static_cast<size_t>(i)].internalPath, internalPath)) {
             return i;
         }
     }
@@ -105,9 +111,9 @@ int FindCandidateByDisplayName(const DesktopObject& object, const std::wstring& 
     return -1;
 }
 
-void PruneStaleDefaultCandidates(DesktopObject& object,
-                                 const std::wstring& objectDir,
-                                 const std::wstring& defaultDir) {
+void PruneDefaultCandidates(DesktopObject& object,
+                            const std::wstring& objectDir,
+                            const std::wstring& defaultDir) {
     std::vector<ImageCandidate> kept;
     kept.reserve(object.candidates.size());
     for (const auto& candidate : object.candidates) {
@@ -118,8 +124,7 @@ void PruneStaleDefaultCandidates(DesktopObject& object,
             }
             continue;
         }
-        if (IsSharedDefaultCandidate(candidate, defaultDir) &&
-            !FileExists(ToAbsoluteAppPath(candidate.internalPath))) {
+        if (IsSharedDefaultCandidate(candidate, defaultDir)) {
             continue;
         }
         kept.push_back(candidate);
@@ -269,16 +274,15 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
     EnsureDirectory(objectDir);
     const std::wstring defaultDir = GetDefaultImageDirectory();
 
-    std::wstring selectedInternalPath;
-    std::wstring selectedDisplayName;
-    if (object.selectedCandidate >= 0 &&
+    std::wstring selectedInternalPath = object.selectedImageInternalPath;
+    if (selectedInternalPath.empty() &&
+        object.selectedCandidate >= 0 &&
         object.selectedCandidate < static_cast<int>(object.candidates.size())) {
         const auto& selected = object.candidates[static_cast<size_t>(object.selectedCandidate)];
         selectedInternalPath = selected.internalPath;
-        selectedDisplayName = selected.displayName;
     }
 
-    PruneStaleDefaultCandidates(object, objectDir, defaultDir);
+    PruneDefaultCandidates(object, objectDir, defaultDir);
 
     const std::wstring originalIconPath = CombinePath(objectDir, L"original_icon.png");
     if (!FileExists(originalIconPath)) {
@@ -296,10 +300,11 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
         candidate.originalPath = object.path.empty() ? object.shellId : object.path;
         candidate.internalPath = ToAppRelativePath(originalIconPath);
         candidate.originalIcon = true;
+        const std::wstring originalInternalPath = candidate.internalPath;
         object.candidates.insert(object.candidates.begin(), std::move(candidate));
-        object.selectedCandidate = 0;
         if (wasMissingCandidates) {
-            ApplyPreferredIconSizeForSelectedCandidate(object);
+            selectedInternalPath = originalInternalPath;
+            object.iconSize = kNativeIconDefaultSize;
         }
     }
 
@@ -314,31 +319,24 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
                 warning += L"default_image 目录中没有可用图片。\n";
             }
         }
-        for (const auto& imagePath : defaultImages) {
-            const std::wstring relativePath = ToAppRelativePath(imagePath);
-            if (CandidateHasInternalPath(object, relativePath)) {
-                continue;
-            }
-            ImageCandidate candidate;
-            candidate.displayName = FileNameFromPath(imagePath);
-            candidate.originalPath = relativePath;
-            candidate.internalPath = relativePath;
-            candidate.originalIcon = false;
-            candidate.layerPriority = kDefaultImageLayerPriority;
-            object.candidates.push_back(std::move(candidate));
-        }
     }
 
     int selected = FindCandidateByInternalPath(object, selectedInternalPath);
-    if (selected < 0) {
-        selected = FindCandidateByDisplayName(object, selectedDisplayName);
+    if (selected >= 0) {
+        SelectObjectCandidate(object, selected);
+        return;
     }
-    if (selected < 0 &&
-        object.selectedCandidate >= 0 &&
-        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
-        selected = object.selectedCandidate;
+    if (!selectedInternalPath.empty() && FileExists(ToAbsoluteAppPath(selectedInternalPath))) {
+        object.selectedCandidate = -1;
+        object.selectedImageInternalPath = selectedInternalPath;
+        return;
     }
-    object.selectedCandidate = selected >= 0 ? selected : (object.candidates.empty() ? -1 : 0);
+    if (!object.candidates.empty()) {
+        SelectObjectCandidate(object, 0);
+    } else {
+        object.selectedCandidate = -1;
+        object.selectedImageInternalPath.clear();
+    }
 }
 
 } // namespace musuka

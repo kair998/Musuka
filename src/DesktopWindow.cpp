@@ -123,6 +123,33 @@ int AutoArrangeGapForItem(bool showLabel) {
     return showLabel ? kNativeAutoArrangeGap : kReplacementAutoArrangeGap;
 }
 
+bool SameInternalPath(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    return NormalizePathForCompare(ToAbsoluteAppPath(left)) ==
+           NormalizePathForCompare(ToAbsoluteAppPath(right));
+}
+
+const ImageCandidate* FindCandidateByInternalPath(const DesktopObject& object, const std::wstring& internalPath) {
+    for (const auto& candidate : object.candidates) {
+        if (SameInternalPath(candidate.internalPath, internalPath)) {
+            return &candidate;
+        }
+    }
+    return nullptr;
+}
+
+ImageCandidate MakeExternalImageCandidate(const std::wstring& internalPath) {
+    ImageCandidate candidate;
+    candidate.displayName = FileNameFromPath(internalPath);
+    candidate.originalPath = internalPath;
+    candidate.internalPath = internalPath;
+    candidate.originalIcon = false;
+    candidate.layerPriority = kDefaultImageLayerPriority;
+    return candidate;
+}
+
 bool TryFindPlacement(const DesktopObject& object,
                       bool showLabel,
                       const RECT& client,
@@ -453,14 +480,31 @@ void DesktopWindow::LoadAssets() {
 
     for (int i = 0; i < static_cast<int>(config.objects.size()); ++i) {
         DesktopObject& object = config.objects[static_cast<size_t>(i)];
-        if (!object.includeInDesktop || object.candidates.empty()) {
+        if (!object.includeInDesktop) {
             continue;
         }
-        if (object.selectedCandidate < 0 ||
-            object.selectedCandidate >= static_cast<int>(object.candidates.size())) {
-            object.selectedCandidate = 0;
+
+        ImageCandidate externalCandidate;
+        const ImageCandidate* selectedCandidate = nullptr;
+        if (!object.selectedImageInternalPath.empty()) {
+            selectedCandidate = FindCandidateByInternalPath(object, object.selectedImageInternalPath);
+            if (!selectedCandidate && FileExists(ToAbsoluteAppPath(object.selectedImageInternalPath))) {
+                externalCandidate = MakeExternalImageCandidate(object.selectedImageInternalPath);
+                selectedCandidate = &externalCandidate;
+            }
         }
-        const ImageCandidate* selectedCandidate = &object.candidates[static_cast<size_t>(object.selectedCandidate)];
+        if (!selectedCandidate &&
+            object.selectedCandidate >= 0 &&
+            object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+            selectedCandidate = &object.candidates[static_cast<size_t>(object.selectedCandidate)];
+        }
+        if (!selectedCandidate && !object.candidates.empty()) {
+            selectedCandidate = &object.candidates.front();
+        }
+        if (!selectedCandidate) {
+            continue;
+        }
+
         std::unique_ptr<Gdiplus::Bitmap> bitmap =
             LoadBitmapFromPath(ToAbsoluteAppPath(selectedCandidate->internalPath));
         if (!bitmap) {

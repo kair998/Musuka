@@ -62,6 +62,11 @@ private:
     void UpdateObjectListRow(int objectIndex);
     void UpdateVisibleObjectRows();
     void PopulateCandidateList();
+    void PopulateDefaultImageList();
+    void LoadDefaultImageCandidates();
+    void SelectCurrentCandidateForObject(const DesktopObject& object);
+    int FindDefaultImageCandidateByPath(const std::wstring& internalPath) const;
+    bool ResolveCurrentCandidate(const DesktopObject& object, ImageCandidate& outCandidate) const;
     void DrawPreview(HWND hwnd);
     void DrawColorPreview(HDC dc, const RECT& rect);
     void SaveConfigQuietly();
@@ -75,13 +80,17 @@ private:
     int page_ = 0;
     int selectedObjectIndex_ = -1;
     int selectedCandidateIndex_ = -1;
+    int selectedDefaultImageIndex_ = -1;
+    bool selectedDefaultImage_ = false;
     std::wstring searchText_;
     std::vector<int> filteredObjects_;
+    std::vector<ImageCandidate> defaultImageCandidates_;
 
     HWND pathEdit_ = nullptr;
     HWND searchEdit_ = nullptr;
     HWND objectList_ = nullptr;
     HWND candidateList_ = nullptr;
+    HWND defaultImageList_ = nullptr;
     HWND previewPane_ = nullptr;
     HWND colorPreview_ = nullptr;
     HWND includeButton_ = nullptr;
@@ -91,6 +100,7 @@ private:
 
     HIMAGELIST objectImages_ = nullptr;
     HIMAGELIST candidateImages_ = nullptr;
+    HIMAGELIST defaultImageImages_ = nullptr;
     HFONT strikeFont_ = nullptr;
     bool suppressNotifications_ = false;
 };

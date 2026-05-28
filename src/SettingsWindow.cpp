@@ -31,6 +31,7 @@ constexpr int ID_TOGGLE_INCLUDE = 1106;
 constexpr int ID_REPLACE = 1107;
 constexpr int ID_ICON_SIZE_SLIDER = 1108;
 constexpr int ID_TOGGLE_INCLUDE_ALL = 1109;
+constexpr int ID_DEFAULT_IMAGE_LIST = 1110;
 constexpr int ID_MODE_ENGINE = 1201;
 constexpr int ID_MODE_WALLPAPER = 1202;
 constexpr int ID_BG_SYSTEM = 1203;
@@ -72,6 +73,14 @@ bool CandidateHasOriginalPath(const DesktopObject& object, const std::wstring& o
     });
 }
 
+bool SameInternalPath(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    return NormalizePathForCompare(ToAbsoluteAppPath(left)) ==
+           NormalizePathForCompare(ToAbsoluteAppPath(right));
+}
+
 HMENU ControlId(int id) {
     return reinterpret_cast<HMENU>(static_cast<INT_PTR>(id));
 }
@@ -109,6 +118,10 @@ SettingsWindow::~SettingsWindow() {
     if (candidateImages_) {
         ImageList_Destroy(candidateImages_);
         candidateImages_ = nullptr;
+    }
+    if (defaultImageImages_) {
+        ImageList_Destroy(defaultImageImages_);
+        defaultImageImages_ = nullptr;
     }
     if (strikeFont_) {
         DeleteObject(strikeFont_);
@@ -335,7 +348,35 @@ LRESULT SettingsWindow::HandleNotify(LPARAM lParam) {
             lv.mask = LVIF_PARAM;
             lv.iItem = item->iItem;
             ListView_GetItem(candidateList_, &lv);
+            selectedDefaultImage_ = false;
+            selectedDefaultImageIndex_ = -1;
             selectedCandidateIndex_ = static_cast<int>(lv.lParam);
+            if (defaultImageList_) {
+                suppressNotifications_ = true;
+                ListView_SetItemState(defaultImageList_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+                suppressNotifications_ = false;
+            }
+            if (previewPane_) {
+                InvalidateRect(previewPane_, nullptr, TRUE);
+            }
+        }
+        return 0;
+    }
+    if (header->idFrom == ID_DEFAULT_IMAGE_LIST && header->code == LVN_ITEMCHANGED) {
+        auto* item = reinterpret_cast<NMLISTVIEW*>(lParam);
+        if ((item->uNewState & LVIS_SELECTED) != 0 && item->iItem >= 0) {
+            LVITEMW lv{};
+            lv.mask = LVIF_PARAM;
+            lv.iItem = item->iItem;
+            ListView_GetItem(defaultImageList_, &lv);
+            selectedDefaultImage_ = true;
+            selectedDefaultImageIndex_ = static_cast<int>(lv.lParam);
+            selectedCandidateIndex_ = -1;
+            if (candidateList_) {
+                suppressNotifications_ = true;
+                ListView_SetItemState(candidateList_, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+                suppressNotifications_ = false;
+            }
             if (previewPane_) {
                 InvalidateRect(previewPane_, nullptr, TRUE);
             }
@@ -384,6 +425,7 @@ void SettingsWindow::DestroyChildControls() {
     searchEdit_ = nullptr;
     objectList_ = nullptr;
     candidateList_ = nullptr;
+    defaultImageList_ = nullptr;
     previewPane_ = nullptr;
     colorPreview_ = nullptr;
     includeButton_ = nullptr;
@@ -398,6 +440,10 @@ void SettingsWindow::DestroyChildControls() {
     if (candidateImages_) {
         ImageList_Destroy(candidateImages_);
         candidateImages_ = nullptr;
+    }
+    if (defaultImageImages_) {
+        ImageList_Destroy(defaultImageImages_);
+        defaultImageImages_ = nullptr;
     }
 }
 
@@ -476,7 +522,10 @@ void SettingsWindow::BuildPage2() {
          selectedObjectIndex_ >= static_cast<int>(app_->Config().objects.size())) &&
         !app_->Config().objects.empty()) {
         selectedObjectIndex_ = 0;
-        selectedCandidateIndex_ = app_->Config().objects.front().selectedCandidate;
+    }
+    LoadDefaultImageCandidates();
+    if (const DesktopObject* selected = SelectedObject()) {
+        SelectCurrentCandidateForObject(*selected);
     }
 
     RECT rc{};
@@ -570,14 +619,22 @@ void SettingsWindow::BuildPage2() {
         const int listX = rightX + 14;
         const int listY = top + 132;
         const int buttonW = 118;
+        const int listW = rightW - 42 - buttonW;
+        const int listH = contentHeight - 150;
+        const int sectionGap = 30;
+        const int objectListH = std::max(96, (listH - sectionGap) / 2);
+        const int defaultTitleY = listY + objectListH + 8;
+        const int defaultListY = defaultTitleY + 22;
+        const int defaultListH = std::max(80, listY + listH - defaultListY);
+        CreateStatic(L"对象候选图", listX, listY - 22, listW, 20, SS_LEFT);
         candidateList_ = CreateWindowExW(WS_EX_CLIENTEDGE,
                                          WC_LISTVIEWW,
                                          L"",
                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
                                          listX,
                                          listY,
-                                         rightW - 42 - buttonW,
-                                         contentHeight - 150,
+                                         listW,
+                                         objectListH,
                                          hwnd_,
                                          ControlId(ID_CANDIDATE_LIST),
                                          app_->Instance(),
@@ -585,6 +642,23 @@ void SettingsWindow::BuildPage2() {
         ApplyDefaultFont(candidateList_);
         ListView_SetExtendedListViewStyle(candidateList_, LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
         PopulateCandidateList();
+
+        CreateStatic(L"default_image", listX, defaultTitleY, listW, 20, SS_LEFT);
+        defaultImageList_ = CreateWindowExW(WS_EX_CLIENTEDGE,
+                                            WC_LISTVIEWW,
+                                            L"",
+                                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_ICON | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                                            listX,
+                                            defaultListY,
+                                            listW,
+                                            defaultListH,
+                                            hwnd_,
+                                            ControlId(ID_DEFAULT_IMAGE_LIST),
+                                            app_->Instance(),
+                                            nullptr);
+        ApplyDefaultFont(defaultImageList_);
+        ListView_SetExtendedListViewStyle(defaultImageList_, LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
+        PopulateDefaultImageList();
 
         const std::wstring includeText = selected->includeInDesktop ? L"忽略" : L"带入";
         includeButton_ = CreateButton(includeText, ID_TOGGLE_INCLUDE, rightX + rightW - buttonW - 14, listY, buttonW, 32);
@@ -705,9 +779,10 @@ void SettingsWindow::OnPage1Next() {
     }
     page_ = 1;
     selectedObjectIndex_ = app_->Config().objects.empty() ? -1 : 0;
-    selectedCandidateIndex_ = selectedObjectIndex_ >= 0
-        ? app_->Config().objects[static_cast<size_t>(selectedObjectIndex_)].selectedCandidate
-        : -1;
+    LoadDefaultImageCandidates();
+    if (const DesktopObject* object = SelectedObject()) {
+        SelectCurrentCandidateForObject(*object);
+    }
     BuildPage();
 }
 
@@ -755,7 +830,8 @@ void SettingsWindow::OnObjectSelected(int objectIndex) {
         return;
     }
     selectedObjectIndex_ = objectIndex;
-    selectedCandidateIndex_ = app_->Config().objects[static_cast<size_t>(objectIndex)].selectedCandidate;
+    LoadDefaultImageCandidates();
+    SelectCurrentCandidateForObject(app_->Config().objects[static_cast<size_t>(objectIndex)]);
     RefreshSelectedObjectControls();
 }
 
@@ -859,18 +935,33 @@ void SettingsWindow::ToggleIncludeAll() {
 
 void SettingsWindow::ReplaceSelectedImage() {
     DesktopObject* object = SelectedObject();
-    if (!object || selectedCandidateIndex_ < 0 ||
-        selectedCandidateIndex_ >= static_cast<int>(object->candidates.size())) {
+    if (!object) {
         ShowError(hwnd_, L"请先选择一个候选图片。");
         return;
     }
-    object->selectedCandidate = selectedCandidateIndex_;
-    ApplyPreferredIconSizeForSelectedCandidate(*object);
+    const ImageCandidate* candidate = nullptr;
+    if (selectedDefaultImage_) {
+        if (selectedDefaultImageIndex_ >= 0 &&
+            selectedDefaultImageIndex_ < static_cast<int>(defaultImageCandidates_.size())) {
+            candidate = &defaultImageCandidates_[static_cast<size_t>(selectedDefaultImageIndex_)];
+            SelectExternalCandidate(*object, *candidate);
+        }
+    } else if (selectedCandidateIndex_ >= 0 &&
+               selectedCandidateIndex_ < static_cast<int>(object->candidates.size())) {
+        candidate = &object->candidates[static_cast<size_t>(selectedCandidateIndex_)];
+        SelectObjectCandidate(*object, selectedCandidateIndex_);
+    }
+    if (!candidate) {
+        ShowError(hwnd_, L"请先选择一个候选图片。");
+        return;
+    }
+    object->iconSize = PreferredIconSizeForCandidate(*candidate);
     SaveConfigQuietly();
     if (previewPane_) {
         InvalidateRect(previewPane_, nullptr, TRUE);
     }
     PopulateCandidateList();
+    PopulateDefaultImageList();
     UpdateSelectionDetailControls();
 }
 
@@ -924,6 +1015,8 @@ bool SettingsWindow::AddCandidateFromFile(DesktopObject& object, const std::wstr
     candidate.layerPriority = kImportedImageLayerPriority;
     object.candidates.push_back(std::move(candidate));
     selectedCandidateIndex_ = static_cast<int>(object.candidates.size()) - 1;
+    selectedDefaultImage_ = false;
+    selectedDefaultImageIndex_ = -1;
     return true;
 }
 
@@ -932,7 +1025,9 @@ void SettingsWindow::RefreshSelectedObjectControls() {
         BuildPage();
         return;
     }
+    LoadDefaultImageCandidates();
     PopulateCandidateList();
+    PopulateDefaultImageList();
     UpdateSelectionDetailControls();
     InvalidateRect(previewPane_, nullptr, TRUE);
 }
@@ -1058,8 +1153,9 @@ void SettingsWindow::PopulateCandidateList() {
     candidateImages_ = ImageList_Create(kThumbnailSize, kThumbnailSize, ILC_COLOR32 | ILC_MASK, 8, 8);
     ListView_SetImageList(candidateList_, candidateImages_, LVSIL_NORMAL);
 
-    if (selectedCandidateIndex_ < 0 ||
-        selectedCandidateIndex_ >= static_cast<int>(object->candidates.size())) {
+    if (!selectedDefaultImage_ &&
+        (selectedCandidateIndex_ < 0 ||
+         selectedCandidateIndex_ >= static_cast<int>(object->candidates.size()))) {
         selectedCandidateIndex_ = object->selectedCandidate;
     }
 
@@ -1073,7 +1169,7 @@ void SettingsWindow::PopulateCandidateList() {
         DeleteObject(thumbnail);
 
         std::wstring text = candidate.displayName.empty() ? FileNameFromPath(candidate.internalPath) : candidate.displayName;
-        if (i == object->selectedCandidate) {
+        if (SameInternalPath(candidate.internalPath, object->selectedImageInternalPath)) {
             text = L"[当前] " + text;
         }
 
@@ -1083,11 +1179,158 @@ void SettingsWindow::PopulateCandidateList() {
         item.pszText = text.data();
         item.iImage = imageIndex;
         item.lParam = i;
-        if (i == selectedCandidateIndex_) {
+        if (!selectedDefaultImage_ && i == selectedCandidateIndex_) {
             item.state = LVIS_SELECTED | LVIS_FOCUSED;
             item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
         }
         ListView_InsertItem(candidateList_, &item);
+    }
+    suppressNotifications_ = false;
+}
+
+void SettingsWindow::LoadDefaultImageCandidates() {
+    defaultImageCandidates_.clear();
+    const auto images = EnumerateImageFiles(GetDefaultImageDirectory(), false);
+    defaultImageCandidates_.reserve(images.size());
+    for (const auto& imagePath : images) {
+        const std::wstring relativePath = ToAppRelativePath(imagePath);
+        ImageCandidate candidate;
+        candidate.displayName = FileNameFromPath(imagePath);
+        candidate.originalPath = relativePath;
+        candidate.internalPath = relativePath;
+        candidate.originalIcon = false;
+        candidate.layerPriority = kDefaultImageLayerPriority;
+        defaultImageCandidates_.push_back(std::move(candidate));
+    }
+}
+
+int SettingsWindow::FindDefaultImageCandidateByPath(const std::wstring& internalPath) const {
+    if (internalPath.empty()) {
+        return -1;
+    }
+    for (int i = 0; i < static_cast<int>(defaultImageCandidates_.size()); ++i) {
+        if (SameInternalPath(defaultImageCandidates_[static_cast<size_t>(i)].internalPath, internalPath)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void SettingsWindow::SelectCurrentCandidateForObject(const DesktopObject& object) {
+    selectedCandidateIndex_ = -1;
+    selectedDefaultImageIndex_ = -1;
+    selectedDefaultImage_ = false;
+
+    std::wstring selectedPath = object.selectedImageInternalPath;
+    if (selectedPath.empty() &&
+        object.selectedCandidate >= 0 &&
+        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+        selectedPath = object.candidates[static_cast<size_t>(object.selectedCandidate)].internalPath;
+    }
+
+    for (int i = 0; i < static_cast<int>(object.candidates.size()); ++i) {
+        if (SameInternalPath(object.candidates[static_cast<size_t>(i)].internalPath, selectedPath)) {
+            selectedCandidateIndex_ = i;
+            return;
+        }
+    }
+
+    const int defaultIndex = FindDefaultImageCandidateByPath(selectedPath);
+    if (defaultIndex >= 0) {
+        selectedDefaultImage_ = true;
+        selectedDefaultImageIndex_ = defaultIndex;
+        return;
+    }
+
+    if (object.selectedCandidate >= 0 &&
+        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+        selectedCandidateIndex_ = object.selectedCandidate;
+    } else if (!object.candidates.empty()) {
+        selectedCandidateIndex_ = 0;
+    }
+}
+
+bool SettingsWindow::ResolveCurrentCandidate(const DesktopObject& object, ImageCandidate& outCandidate) const {
+    std::wstring selectedPath = object.selectedImageInternalPath;
+    if (selectedPath.empty() &&
+        object.selectedCandidate >= 0 &&
+        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+        selectedPath = object.candidates[static_cast<size_t>(object.selectedCandidate)].internalPath;
+    }
+
+    for (const auto& candidate : object.candidates) {
+        if (SameInternalPath(candidate.internalPath, selectedPath)) {
+            outCandidate = candidate;
+            return true;
+        }
+    }
+
+    const int defaultIndex = FindDefaultImageCandidateByPath(selectedPath);
+    if (defaultIndex >= 0) {
+        outCandidate = defaultImageCandidates_[static_cast<size_t>(defaultIndex)];
+        return true;
+    }
+
+    if (object.selectedCandidate >= 0 &&
+        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+        outCandidate = object.candidates[static_cast<size_t>(object.selectedCandidate)];
+        return true;
+    }
+    if (!object.candidates.empty()) {
+        outCandidate = object.candidates.front();
+        return true;
+    }
+    return false;
+}
+
+void SettingsWindow::PopulateDefaultImageList() {
+    if (!defaultImageList_) {
+        return;
+    }
+    DesktopObject* object = SelectedObject();
+    if (!object) {
+        return;
+    }
+
+    suppressNotifications_ = true;
+    ListView_DeleteAllItems(defaultImageList_);
+    if (defaultImageImages_) {
+        ImageList_Destroy(defaultImageImages_);
+    }
+    defaultImageImages_ = ImageList_Create(kThumbnailSize, kThumbnailSize, ILC_COLOR32 | ILC_MASK, 8, 8);
+    ListView_SetImageList(defaultImageList_, defaultImageImages_, LVSIL_NORMAL);
+
+    if (selectedDefaultImage_ &&
+        (selectedDefaultImageIndex_ < 0 ||
+         selectedDefaultImageIndex_ >= static_cast<int>(defaultImageCandidates_.size()))) {
+        selectedDefaultImageIndex_ = FindDefaultImageCandidateByPath(object->selectedImageInternalPath);
+    }
+
+    for (int i = 0; i < static_cast<int>(defaultImageCandidates_.size()); ++i) {
+        const auto& candidate = defaultImageCandidates_[static_cast<size_t>(i)];
+        HBITMAP thumbnail = CreateThumbnailBitmap(candidate.internalPath, kThumbnailSize, kThumbnailSize);
+        if (!thumbnail) {
+            thumbnail = CreateBlankThumbnail(kThumbnailSize, kThumbnailSize);
+        }
+        const int imageIndex = ImageList_Add(defaultImageImages_, thumbnail, nullptr);
+        DeleteObject(thumbnail);
+
+        std::wstring text = candidate.displayName.empty() ? FileNameFromPath(candidate.internalPath) : candidate.displayName;
+        if (SameInternalPath(candidate.internalPath, object->selectedImageInternalPath)) {
+            text = L"[当前] " + text;
+        }
+
+        LVITEMW item{};
+        item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM | LVIF_STATE;
+        item.iItem = i;
+        item.pszText = text.data();
+        item.iImage = imageIndex;
+        item.lParam = i;
+        if (selectedDefaultImage_ && i == selectedDefaultImageIndex_) {
+            item.state = LVIS_SELECTED | LVIS_FOCUSED;
+            item.stateMask = LVIS_SELECTED | LVIS_FOCUSED;
+        }
+        ListView_InsertItem(defaultImageList_, &item);
     }
     suppressNotifications_ = false;
 }
@@ -1102,14 +1345,13 @@ void SettingsWindow::DrawPreview(HWND hwnd) {
     DeleteObject(background);
 
     DesktopObject* object = SelectedObject();
-    if (!object || object->selectedCandidate < 0 ||
-        object->selectedCandidate >= static_cast<int>(object->candidates.size())) {
+    ImageCandidate candidate;
+    if (!object || !ResolveCurrentCandidate(*object, candidate)) {
         DrawTextW(dc, L"未选中文件", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         EndPaint(hwnd, &ps);
         return;
     }
 
-    const auto& candidate = object->candidates[static_cast<size_t>(object->selectedCandidate)];
     auto bitmap = LoadBitmapFromPath(ToAbsoluteAppPath(candidate.internalPath));
     if (!bitmap) {
         DrawTextW(dc, L"图片读取失败", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

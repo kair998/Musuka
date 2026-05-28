@@ -42,6 +42,32 @@ ImageCandidate CandidateFromJson(const JsonValue& value) {
     return candidate;
 }
 
+bool PathIsInsideDirectory(const std::wstring& path, const std::wstring& directory) {
+    const std::wstring normalizedPath = NormalizePathForCompare(path);
+    std::wstring normalizedDirectory = NormalizePathForCompare(directory);
+    if (normalizedPath.empty() || normalizedDirectory.empty()) {
+        return false;
+    }
+    if (normalizedDirectory.back() != L'\\' && normalizedDirectory.back() != L'/') {
+        normalizedDirectory.push_back(L'\\');
+    }
+    return normalizedPath.size() > normalizedDirectory.size() &&
+           normalizedPath.compare(0, normalizedDirectory.size(), normalizedDirectory) == 0;
+}
+
+bool IsSharedDefaultCandidate(const ImageCandidate& candidate) {
+    return !candidate.originalIcon &&
+           PathIsInsideDirectory(ToAbsoluteAppPath(candidate.internalPath), GetDefaultImageDirectory());
+}
+
+bool SameInternalPath(const std::wstring& left, const std::wstring& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    return NormalizePathForCompare(ToAbsoluteAppPath(left)) ==
+           NormalizePathForCompare(ToAbsoluteAppPath(right));
+}
+
 JsonValue ObjectToJson(const DesktopObject& object) {
     JsonValue::Object result;
     result["id"] = WideStringValue(object.id);
@@ -53,19 +79,27 @@ JsonValue ObjectToJson(const DesktopObject& object) {
     result["x"] = JsonValue::Number(object.x);
     result["y"] = JsonValue::Number(object.y);
     result["icon_size"] = JsonValue::Number(object.iconSize);
-    result["selected_candidate"] = JsonValue::Number(object.selectedCandidate);
 
-    std::wstring selectedPath;
-    if (object.selectedCandidate >= 0 &&
+    std::wstring selectedPath = object.selectedImageInternalPath;
+    if (selectedPath.empty() &&
+        object.selectedCandidate >= 0 &&
         object.selectedCandidate < static_cast<int>(object.candidates.size())) {
         selectedPath = object.candidates[static_cast<size_t>(object.selectedCandidate)].internalPath;
     }
-    result["selected_image_internal_path"] = WideStringValue(selectedPath);
 
     JsonValue::Array candidates;
+    int selectedCandidate = -1;
     for (const auto& candidate : object.candidates) {
+        if (IsSharedDefaultCandidate(candidate)) {
+            continue;
+        }
+        if (SameInternalPath(candidate.internalPath, selectedPath)) {
+            selectedCandidate = static_cast<int>(candidates.size());
+        }
         candidates.push_back(CandidateToJson(candidate));
     }
+    result["selected_candidate"] = JsonValue::Number(selectedCandidate);
+    result["selected_image_internal_path"] = WideStringValue(selectedPath);
     result["candidates"] = JsonValue::ArrayValue(std::move(candidates));
     return JsonValue::ObjectValue(std::move(result));
 }
@@ -84,31 +118,41 @@ DesktopObject ObjectFromJson(const JsonValue& value) {
         static_cast<int>(value.At("icon_size").AsNumber(kDesktopIconDefaultSize)),
         kDesktopIconMinSize,
         kDesktopIconMaxSize);
-    object.selectedCandidate = static_cast<int>(value.At("selected_candidate").AsNumber(0));
+    const int storedSelectedCandidate = static_cast<int>(value.At("selected_candidate").AsNumber(0));
 
     for (const auto& item : value.At("candidates").AsArray()) {
         object.candidates.push_back(CandidateFromJson(item));
     }
 
     const std::wstring selectedPath = WideFromValue(value.At("selected_image_internal_path"));
+    object.selectedImageInternalPath = selectedPath;
     if (!selectedPath.empty()) {
+        object.selectedCandidate = -1;
         for (size_t i = 0; i < object.candidates.size(); ++i) {
-            if (object.candidates[i].internalPath == selectedPath) {
+            if (SameInternalPath(object.candidates[i].internalPath, selectedPath)) {
                 object.selectedCandidate = static_cast<int>(i);
                 break;
             }
         }
+    } else {
+        object.selectedCandidate = storedSelectedCandidate;
     }
     if (object.selectedCandidate < 0 ||
         object.selectedCandidate >= static_cast<int>(object.candidates.size())) {
-        object.selectedCandidate = 0;
+        object.selectedCandidate = -1;
+    }
+    if (object.selectedImageInternalPath.empty() &&
+        object.selectedCandidate >= 0 &&
+        object.selectedCandidate < static_cast<int>(object.candidates.size())) {
+        object.selectedImageInternalPath =
+            object.candidates[static_cast<size_t>(object.selectedCandidate)].internalPath;
     }
     return object;
 }
 
 JsonValue ConfigToJson(const AppConfig& config) {
     JsonValue::Object root;
-    root["version"] = JsonValue::Number(2);
+    root["version"] = JsonValue::Number(3);
     root["desktop_path"] = WideStringValue(config.desktopPath);
     root["desktop_mode"] = WideStringValue(ToString(config.desktopMode));
     root["background_source"] = WideStringValue(ToString(config.backgroundSource));
