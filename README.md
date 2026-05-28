@@ -1,4 +1,4 @@
-<img width="1672" height="941" alt="ChatGPT Image 2026年5月27日 01_07_15" src="https://github.com/user-attachments/assets/d92a2a12-06cb-4f92-9b3f-0c776701d0eb" />
+<img width="1672" height="941" alt="v0 3 0post" src="https://github.com/user-attachments/assets/871f35fa-2b9a-4d96-956e-06573b7902ec" />
 
 # Musuka
 
@@ -155,3 +155,5 @@ release\musuka.exe
 15. 删除某张原始导入图片，再次进入 desktop，确认 musuka 内部备份图片仍可使用。
 16. 确认 `data\icons\<desktop-object-id>\` 中没有 `default_...` 内置图副本，默认候选图只来自共享的 `default_image\`。
 
+## 欢迎打赏
+<img width="996" height="996" alt="58b38e0ed8e17a3e3f84c9d4dc59ce2d" src="https://github.com/user-attachments/assets/a90fb9b8-dfd1-43af-be88-2a9c98d40f84" />
