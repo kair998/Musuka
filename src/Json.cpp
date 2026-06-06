@@ -20,7 +20,7 @@ public:
 
     bool Parse(JsonValue& out, std::string& error) {
         SkipWhitespace();
-        if (!ParseValue(out, error)) {
+        if (!ParseValue(out, error, 0)) {
             return false;
         }
         SkipWhitespace();
@@ -32,7 +32,11 @@ public:
     }
 
 private:
-    bool ParseValue(JsonValue& out, std::string& error) {
+    bool ParseValue(JsonValue& out, std::string& error, int depth) {
+        if (depth > 64) {
+            error = "JSON nesting too deep.";
+            return false;
+        }
         SkipWhitespace();
         if (pos_ >= text_.size()) {
             error = "Unexpected end of JSON.";
@@ -57,10 +61,10 @@ private:
             return true;
         }
         if (ch == '[') {
-            return ParseArray(out, error);
+            return ParseArray(out, error, depth);
         }
         if (ch == '{') {
-            return ParseObject(out, error);
+            return ParseObject(out, error, depth);
         }
         if (ch == '-' || std::isdigit(static_cast<unsigned char>(ch))) {
             return ParseNumber(out, error);
@@ -203,7 +207,7 @@ private:
         return true;
     }
 
-    bool ParseArray(JsonValue& out, std::string& error) {
+    bool ParseArray(JsonValue& out, std::string& error, int depth) {
         ++pos_;
         JsonValue::Array values;
         SkipWhitespace();
@@ -211,9 +215,14 @@ private:
             out = JsonValue::ArrayValue(std::move(values));
             return true;
         }
+        constexpr size_t kMaxArraySize = 65536;
         for (;;) {
+            if (values.size() >= kMaxArraySize) {
+                error = "JSON array too large.";
+                return false;
+            }
             JsonValue item;
-            if (!ParseValue(item, error)) {
+            if (!ParseValue(item, error, depth + 1)) {
                 return false;
             }
             values.push_back(std::move(item));
@@ -229,7 +238,7 @@ private:
         }
     }
 
-    bool ParseObject(JsonValue& out, std::string& error) {
+    bool ParseObject(JsonValue& out, std::string& error, int depth) {
         ++pos_;
         JsonValue::Object values;
         SkipWhitespace();
@@ -237,7 +246,12 @@ private:
             out = JsonValue::ObjectValue(std::move(values));
             return true;
         }
+        constexpr size_t kMaxObjectMembers = 4096;
         for (;;) {
+            if (values.size() >= kMaxObjectMembers) {
+                error = "JSON object has too many members.";
+                return false;
+            }
             std::string key;
             if (!ParseString(key, error)) {
                 return false;
@@ -248,7 +262,7 @@ private:
                 return false;
             }
             JsonValue item;
-            if (!ParseValue(item, error)) {
+            if (!ParseValue(item, error, depth + 1)) {
                 return false;
             }
             values[key] = std::move(item);

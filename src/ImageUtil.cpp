@@ -4,9 +4,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 namespace musuka {
 
@@ -43,6 +48,123 @@ HICON LoadStockIcon(SHSTOCKICONID id, bool large) {
 }
 
 } // namespace
+
+// Parse image file headers (PNG / JPEG / BMP) to get pixel dimensions
+// without invoking GDI+ full decode. Returns false if dimensions exceed limits
+// or format is unrecognized.
+namespace {
+
+bool CheckImageDimensionsPreDecode(const std::wstring& path,
+                                    UINT maxDim, UINT64 maxPixels) {
+    // For PNG/BMP, a small initial read suffices (headers at fixed offsets).
+    // For JPEG, read up to kJpegMaxScan into a contiguous buffer so that
+    // large APP/EXIF segments don't cause cross-buffer parsing errors.
+    constexpr size_t kInitialBufSize = 4096;
+    constexpr size_t kJpegMaxScan = 256 * 1024; // 256 KB total scan cap
+    auto buf = std::make_unique<unsigned char[]>(kInitialBufSize);
+    std::ifstream file(fs::path(path), std::ios::binary);
+    if (!file) return false;
+
+    file.read(reinterpret_cast<char*>(buf.get()), kInitialBufSize);
+    const auto bytesRead = static_cast<size_t>(file.gcount());
+    if (bytesRead < 8) return true; // too small for any known format
+
+    UINT w = 0, h = 0;
+    bool recognized = false;
+
+    // PNG: signature + IHDR at fixed offset 16-23
+    if (bytesRead >= 25 &&
+        buf[0] == 0x89 && buf[1] == 0x50 && buf[2] == 0x4E && buf[3] == 0x47 &&
+        buf[4] == 0x0D && buf[5] == 0x0A && buf[6] == 0x1A && buf[7] == 0x0A) {
+        w = (static_cast<UINT>(buf[16]) << 24) | (static_cast<UINT>(buf[17]) << 16) |
+            (static_cast<UINT>(buf[18]) << 8)  |  static_cast<UINT>(buf[19]);
+        h = (static_cast<UINT>(buf[20]) << 24) | (static_cast<UINT>(buf[21]) << 16) |
+            (static_cast<UINT>(buf[22]) << 8)  |  static_cast<UINT>(buf[23]);
+        recognized = true;
+    }
+    // BMP: DIB header at fixed offset 18-25
+    else if (bytesRead >= 26 &&
+             buf[0] == 'B' && buf[1] == 'M') {
+        w = static_cast<UINT>(buf[18]) | (static_cast<UINT>(buf[19]) << 8) |
+            (static_cast<UINT>(buf[20]) << 16) | (static_cast<UINT>(buf[21]) << 24);
+        h = static_cast<UINT>(buf[22]) | (static_cast<UINT>(buf[23]) << 8) |
+            (static_cast<UINT>(buf[24]) << 16) | (static_cast<UINT>(buf[25]) << 24);
+        if (h > 0x80000000u) h = 0;
+        recognized = true;
+    }
+    // JPEG: read up to scan cap into one contiguous buffer, then scan markers
+    else if (bytesRead >= 4 && buf[0] == 0xFF && buf[1] == 0xD8) {
+        // If initial read was smaller than scan cap, try to read more
+        size_t jpegLen = bytesRead;
+        if (jpegLen < kJpegMaxScan && file.good()) {
+            auto jpegBuf = std::make_unique<unsigned char[]>(kJpegMaxScan);
+            // Copy what we already read
+            memcpy(jpegBuf.get(), buf.get(), bytesRead);
+            // Read remaining up to cap
+            file.read(reinterpret_cast<char*>(jpegBuf.get() + bytesRead),
+                      static_cast<std::streamsize>(kJpegMaxScan - bytesRead));
+            jpegLen = bytesRead + static_cast<size_t>(file.gcount());
+
+            // Scan the full contiguous buffer
+            size_t pos = 2;
+            while (pos + 9 <= jpegLen) {
+                if (jpegBuf[pos] != 0xFF) break;
+                if (jpegBuf[pos + 1] == 0xFF) { ++pos; continue; }
+                const unsigned char marker = jpegBuf[pos + 1];
+                if ((marker >= 0xC0 && marker <= 0xCF) &&
+                    marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+                    h = (static_cast<UINT>(jpegBuf[pos + 5]) << 8) |
+                        static_cast<UINT>(jpegBuf[pos + 6]);
+                    w = (static_cast<UINT>(jpegBuf[pos + 7]) << 8) |
+                        static_cast<UINT>(jpegBuf[pos + 8]);
+                    recognized = true;
+                    break;
+                }
+                if (marker == 0xD9 || marker == 0xDA) break;
+                if (pos + 4 > jpegLen) break;
+                const UINT segLen = (static_cast<UINT>(jpegBuf[pos + 2]) << 8) |
+                                     static_cast<UINT>(jpegBuf[pos + 3]);
+                if (segLen < 2) break;
+                pos += 2 + segLen;
+            }
+        } else {
+            // File fits in initial buffer — scan inline
+            size_t pos = 2;
+            while (pos + 9 <= jpegLen) {
+                if (buf[pos] != 0xFF) break;
+                if (buf[pos + 1] == 0xFF) { ++pos; continue; }
+                const unsigned char marker = buf[pos + 1];
+                if ((marker >= 0xC0 && marker <= 0xCF) &&
+                    marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+                    h = (static_cast<UINT>(buf[pos + 5]) << 8) |
+                        static_cast<UINT>(buf[pos + 6]);
+                    w = (static_cast<UINT>(buf[pos + 7]) << 8) |
+                        static_cast<UINT>(buf[pos + 8]);
+                    recognized = true;
+                    break;
+                }
+                if (marker == 0xD9 || marker == 0xDA) break;
+                if (pos + 4 > jpegLen) break;
+                const UINT segLen = (static_cast<UINT>(buf[pos + 2]) << 8) |
+                                     static_cast<UINT>(buf[pos + 3]);
+                if (segLen < 2) break;
+                pos += 2 + segLen;
+            }
+        }
+        if (!recognized) {
+            return false; // JPEG without SOF in scan range — reject
+        }
+    }
+
+    // Unknown / unrecognized format: reject rather than defer to GDI+
+    if (!recognized) {
+        return false;
+    }
+    if (w == 0 || h == 0) return false;
+    return w <= maxDim && h <= maxDim && (static_cast<UINT64>(w) * static_cast<UINT64>(h)) <= maxPixels;
+}
+
+} // anonymous namespace
 
 bool SaveHIconAsPng(HICON icon, const std::wstring& path) {
     if (!icon) {
@@ -119,9 +241,34 @@ std::unique_ptr<Gdiplus::Bitmap> LoadBitmapFromPath(const std::wstring& imagePat
     if (imagePath.empty() || !FileExists(imagePath)) {
         return nullptr;
     }
+    // Reject oversized files before GDI+ decodes them (decompression bomb defense).
+    {
+        std::error_code ec;
+        const auto fileSize = fs::file_size(fs::path(imagePath), ec);
+        if (!ec && fileSize > 10 * 1024 * 1024) { // 10 MB raw file cap
+            return nullptr;
+        }
+    }
+    // Pre-decode header check: parse PNG/JPEG/BMP headers to get dimensions
+    // without invoking GDI+ full decompression.
+    {
+        constexpr UINT kPreMaxDim = 8192;
+        constexpr UINT64 kPreMaxPixels = 16777216ULL; // 16 MP
+        if (!CheckImageDimensionsPreDecode(imagePath, kPreMaxDim, kPreMaxPixels)) {
+            return nullptr;
+        }
+    }
     auto bitmap = std::make_unique<Gdiplus::Bitmap>(imagePath.c_str(), FALSE);
     if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok ||
         bitmap->GetWidth() == 0 || bitmap->GetHeight() == 0) {
+        return nullptr;
+    }
+    constexpr UINT kMaxDimension = 8192;
+    constexpr UINT64 kMaxPixels = 16777216ULL; // 16 megapixels (~64 MB at ARGB)
+    const UINT w = bitmap->GetWidth();
+    const UINT h = bitmap->GetHeight();
+    if (w > kMaxDimension || h > kMaxDimension ||
+        static_cast<UINT64>(w) * static_cast<UINT64>(h) > kMaxPixels) {
         return nullptr;
     }
     return bitmap;

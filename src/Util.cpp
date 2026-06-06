@@ -351,4 +351,69 @@ std::wstring ParentDirectory(const std::wstring& path) {
     return fs::path(path).parent_path().wstring();
 }
 
+bool IsSafeRelativeId(const std::wstring& id) {
+    if (id.empty() || id.size() > 128) {
+        return false;
+    }
+    for (wchar_t ch : id) {
+        const bool safe = (ch >= L'0' && ch <= L'9') ||
+                          (ch >= L'A' && ch <= L'Z') ||
+                          (ch >= L'a' && ch <= L'z') ||
+                          ch == L'_' || ch == L'-';
+        if (!safe) {
+            return false;
+        }
+    }
+    // Reject "." and ".."
+    if (id == L"." || id == L"..") {
+        return false;
+    }
+    // Reject trailing dots or leading dots (Windows treats them as relative)
+    if (id.front() == L'.' || id.back() == L'.') {
+        return false;
+    }
+    // Reject Windows reserved device names (case-insensitive)
+    std::wstring upper = id;
+    for (auto& c : upper) { if (c >= L'a' && c <= L'z') c -= 32; }
+    static const std::wstring reserved[] = {
+        L"CON", L"PRN", L"AUX", L"NUL",
+        L"COM1", L"COM2", L"COM3", L"COM4", L"COM5",
+        L"COM6", L"COM7", L"COM8", L"COM9",
+        L"LPT1", L"LPT2", L"LPT3", L"LPT4", L"LPT5",
+        L"LPT6", L"LPT7", L"LPT8", L"LPT9"
+    };
+    for (const auto& r : reserved) {
+        if (upper == r) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsPathInsideIconsRoot(const std::wstring& candidatePath) {
+    // Verify the icons root directory itself is safe (exists and canonical).
+    std::error_code ec;
+    fs::path canonicalRoot = fs::canonical(fs::path(GetIconsDirectory()), ec);
+    if (ec) {
+        return false; // root doesn't exist or can't resolve
+    }
+    // For candidate: use weakly_canonical so it works even if path doesn't exist yet.
+    // This fixes a regression where new object directories couldn't be created.
+    fs::path resolvedCandidate = fs::weakly_canonical(fs::path(candidatePath));
+    std::wstring objStr = NormalizePathForCompare(resolvedCandidate.wstring());
+    std::wstring rootStr = NormalizePathForCompare(canonicalRoot.wstring());
+    // Ensure root ends with a separator for strict prefix matching.
+    if (!rootStr.empty() && rootStr.back() != L'\\' && rootStr.back() != L'/') {
+        rootStr += L'\\';
+    }
+    return objStr.size() >= rootStr.size() &&
+           objStr.compare(0, rootStr.size(), rootStr) == 0;
+}
+
+bool IsReparsePoint(const std::wstring& path) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) return false;
+    return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
 } // namespace musuka

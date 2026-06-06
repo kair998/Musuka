@@ -44,6 +44,15 @@ std::wstring CurrentTimestampForFileName();
 std::wstring ColorToHex(COLORREF color);
 COLORREF ColorFromHex(const std::wstring& value, COLORREF fallback);
 std::wstring ParentDirectory(const std::wstring& path);
+bool IsSafeRelativeId(const std::wstring& id);
+
+// Verify that candidatePath (after canonical resolution) is strictly inside
+// the data\icons root directory. Returns false if path escapes or cannot be resolved.
+bool IsPathInsideIconsRoot(const std::wstring& candidatePath);
+
+// Check whether a filesystem path is a reparse point (junction / symlink).
+// Returns true if the attribute check indicates a reparse point.
+bool IsReparsePoint(const std::wstring& path);
 
 } // namespace musuka
 
