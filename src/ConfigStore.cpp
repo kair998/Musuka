@@ -7,7 +7,12 @@
 #include <filesystem>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
 #include <utility>
+#include <windows.h>
+#include <wincrypt.h>
+
+namespace fs = std::filesystem;
 
 namespace musuka {
 
@@ -106,7 +111,8 @@ JsonValue ObjectToJson(const DesktopObject& object) {
 
 DesktopObject ObjectFromJson(const JsonValue& value) {
     DesktopObject object;
-    object.id = WideFromValue(value.At("id"));
+    std::wstring rawId = WideFromValue(value.At("id"));
+    object.id = IsSafeRelativeId(rawId) ? rawId : SanitizeFileName(rawId);
     object.name = WideFromValue(value.At("name"));
     object.type = DesktopObjectTypeFromString(WideFromValue(value.At("type")));
     object.path = WideFromValue(value.At("path"));
@@ -185,13 +191,20 @@ void ConfigFromJson(const JsonValue& root, AppConfig& config) {
 }
 
 bool ReadFileUtf8(const std::wstring& path, std::string& out) {
-    std::ifstream file(std::filesystem::path(path), std::ios::binary);
+    std::ifstream file(std::filesystem::path(path), std::ios::binary | std::ios::ate);
     if (!file) {
         return false;
     }
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
-    out = buffer.str();
+    const auto fileSize = file.tellg();
+    constexpr auto kMaxConfigSize = static_cast<std::streamoff>(16 * 1024 * 1024); // 16 MB
+    if (fileSize < 0 || fileSize > kMaxConfigSize) {
+        return false;
+    }
+    file.seekg(0, std::ios::beg);
+    out.resize(static_cast<size_t>(fileSize));
+    if (!file.read(out.data(), fileSize)) {
+        return false;
+    }
     if (out.size() >= 3 &&
         static_cast<unsigned char>(out[0]) == 0xEF &&
         static_cast<unsigned char>(out[1]) == 0xBB &&
@@ -207,6 +220,30 @@ bool ConfigStore::Load(AppConfig& config, std::wstring& warning) {
     warning.clear();
     EnsureDirectory(GetDataDirectory());
     EnsureDirectory(GetIconsDirectory());
+
+    // Clean up stale temp files from previous save attempts (crashes, etc.).
+    // Use a named mutex so we don't delete another running instance's active temp file.
+    {
+        HANDLE hMutex = CreateMutexW(nullptr, FALSE, L"Local\\musuka_config_cleanup");
+        const bool acquired = (WaitForSingleObject(hMutex, 0) == WAIT_OBJECT_0);
+        if (acquired) {
+            std::error_code ec;
+            const auto dataDir = fs::path(GetDataDirectory());
+            if (fs::exists(dataDir, ec) && fs::is_directory(dataDir, ec)) {
+                for (const auto& entry : fs::directory_iterator(dataDir, ec)) {
+                    if (ec) break;
+                    const std::wstring name = entry.path().filename().wstring();
+                    // Match config.json.tmp.* pattern
+                    if (name.size() > 16 &&
+                        name.find(L"config.json.tmp.") == 0) {
+                        fs::remove(entry.path(), ec);
+                    }
+                }
+            }
+            ReleaseMutex(hMutex);
+        }
+        CloseHandle(hMutex);
+    }
 
     const std::wstring configPath = GetConfigPath();
     if (!FileExists(configPath)) {
@@ -231,6 +268,22 @@ bool ConfigStore::Load(AppConfig& config, std::wstring& warning) {
     }
 
     ConfigFromJson(root, config);
+    // Force-regenerate every object ID from stable key to prevent
+    // ID collisions from sanitized names or tampered config values.
+    for (auto& object : config.objects) {
+        const std::wstring newId = MakeObjectId(object.name, ObjectStableKey(object));
+        if (!IsSafeRelativeId(newId)) {
+            // Fallback: hash-based deterministic ID
+            object.id = L"id_" + std::to_wstring(std::hash<std::wstring>{}(object.path + object.shellId));
+        } else {
+            object.id = newId;
+        }
+        // Cap the object array to a sane limit.
+        if (config.objects.size() > 1024) {
+            config.objects.resize(1024);
+            break;
+        }
+    }
     return true;
 }
 
@@ -246,13 +299,66 @@ bool ConfigStore::Save(const AppConfig& config, std::wstring& error) const {
     }
 
     const std::string text = StringifyJson(ConfigToJson(config), 0);
-    std::ofstream file(std::filesystem::path(GetConfigPath()), std::ios::binary | std::ios::trunc);
-    if (!file) {
-        error = L"无法写入配置文件。";
-        return false;
+    const std::wstring configPath = GetConfigPath();
+    // Use a unique temp name with millisecond precision + crypto-random suffix.
+    // Hold the same named mutex during write so cleanup doesn't delete our active file.
+    {
+        HANDLE hMutex = CreateMutexW(nullptr, FALSE, L"Local\\musuka_config_cleanup");
+        if (WaitForSingleObject(hMutex, 5000) != WAIT_OBJECT_0) {
+            error = L"无法获取配置写入锁。";
+            CloseHandle(hMutex);
+            return false;
+        }
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        wchar_t tsBuf[64]{};
+        swprintf_s(tsBuf, L"%04u%02u%02u_%02u%02u%02u_%03u",
+                   time.wYear, time.wMonth, time.wDay,
+                   time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+        // Use CryptGenRandom for cross-process unique suffix
+        HCRYPTPROV hProv = 0;
+        unsigned long randVal = 0;
+        if (CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_FULL,
+                                  CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+            CryptGenRandom(hProv, sizeof(randVal), reinterpret_cast<BYTE*>(&randVal));
+            CryptReleaseContext(hProv, 0);
+        } else {
+            randVal = static_cast<unsigned long>(GetTickCount()) ^ GetCurrentProcessId();
+        }
+        wchar_t randBuf[16]{};
+        swprintf_s(randBuf, L"_x%08lX", randVal);
+        const std::wstring tempPath = configPath + L".tmp." + tsBuf + randBuf;
+
+        {
+            std::ofstream file(std::filesystem::path(tempPath), std::ios::binary | std::ios::trunc);
+            if (!file) {
+                ReleaseMutex(hMutex);
+                CloseHandle(hMutex);
+                error = L"无法写入临时配置文件。";
+                return false;
+            }
+            file.write(text.data(), static_cast<std::streamsize>(text.size()));
+            if (!file) {
+                ReleaseMutex(hMutex);
+                CloseHandle(hMutex);
+                error = L"写入临时配置文件失败。";
+                return false;
+            }
+            file.flush();
+        }
+        if (!MoveFileExW(tempPath.c_str(), configPath.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            ReleaseMutex(hMutex);
+            CloseHandle(hMutex);
+            error = L"无法替换配置文件。";
+            std::error_code ignoreEc;
+            fs::remove(fs::path(tempPath), ignoreEc);
+            return false;
+        }
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
     }
-    file.write(text.data(), static_cast<std::streamsize>(text.size()));
-    return static_cast<bool>(file);
+    return true;
 }
 
 } // namespace musuka

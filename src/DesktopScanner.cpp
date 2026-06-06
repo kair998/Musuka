@@ -271,7 +271,17 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
     }
 
     const std::wstring objectDir = CombinePath(GetIconsDirectory(), object.id);
+    if (!IsPathInsideIconsRoot(objectDir)) {
+        warning = L"对象目录路径异常，已跳过图片初始化。";
+        return;
+    }
     EnsureDirectory(objectDir);
+    // TOCTOU defense: re-check that objectDir is not a reparse point
+    // after creation, in case it was replaced between verification and use.
+    if (IsReparsePoint(objectDir)) {
+        warning = L"对象目录为重解析点，已跳过图片初始化。";
+        return;
+    }
     const std::wstring defaultDir = GetDefaultImageDirectory();
 
     std::wstring selectedInternalPath = object.selectedImageInternalPath;

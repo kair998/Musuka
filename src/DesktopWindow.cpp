@@ -8,8 +8,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <windowsx.h>
+
+namespace fs = std::filesystem;
 
 namespace musuka {
 
@@ -927,6 +931,9 @@ void DesktopWindow::OpenObject(int objectIndex) {
         ShellExecuteChecked(hwnd_, L"open", OpenShellIdForObject(object));
         return;
     }
+    if (object.path.empty()) {
+        return;
+    }
     ShellExecuteChecked(hwnd_, L"open", object.path);
 }
 
@@ -951,6 +958,76 @@ void DesktopWindow::RunObjectAsAdmin(int objectIndex) {
         ShowError(hwnd_, L"该系统对象不支持以管理员身份运行。");
         return;
     }
+    if (object.path.empty() || !FileExists(object.path)) {
+        ShowError(hwnd_, L"目标文件不存在，无法以管理员身份运行。");
+        return;
+    }
+    // Only allow admin elevation for known executable types to prevent
+    // a tampered config from tricking the user into elevating arbitrary files.
+    // .lnk is intentionally excluded: a desktop shortcut can point anywhere,
+    // and resolving its real target requires COM (IShellLinkW) which adds
+    // complexity without guaranteeing trustworthiness.
+    const std::wstring ext = ExtensionLower(object.path);
+    const bool isExecutable = ext == L".exe" || ext == L".bat" || ext == L".cmd" ||
+                              ext == L".ps1" || ext == L".vbs" || ext == L".vbe" ||
+                              ext == L".js"  || ext == L".wsf" || ext == L".msc";
+    if (!isExecutable) {
+        ShowError(hwnd_, L"该文件类型不支持以管理员身份运行。");
+        return;
+    }
+    // Verify the target file actually resides under a REAL desktop directory
+    // (not config.desktopPath, which is untrusted user input).
+    // Use SHGetKnownFolderPath to get trusted system desktop paths:
+    // both the user's desktop and the public desktop.
+    {
+        auto getKnown = [](REFKNOWNFOLDERID folderId) -> std::wstring {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(SHGetKnownFolderPath(folderId, 0, nullptr, &path))) {
+                std::wstring result(path);
+                CoTaskMemFree(path);
+                return result;
+            }
+            return L"";
+        };
+        const std::vector<std::wstring> trustedRoots = {
+            getKnown(FOLDERID_Desktop),
+            getKnown(FOLDERID_PublicDesktop),
+        };
+        std::wstring targetDir = NormalizePathForCompare(ParentDirectory(object.path));
+        bool found = false;
+        for (const auto& root : trustedRoots) {
+            if (root.empty()) continue;
+            std::wstring desktopRoot = NormalizePathForCompare(root);
+            if (!desktopRoot.empty() && desktopRoot.back() != L'\\' && desktopRoot.back() != L'/') {
+                desktopRoot += L'\\';
+            }
+            if (targetDir.size() >= desktopRoot.size() &&
+                targetDir.compare(0, desktopRoot.size(), desktopRoot) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            ShowError(hwnd_, L"目标文件不在系统桌面目录下，已拒绝以管理员身份运行。");
+            return;
+        }
+    }
+    // Show full target path and real filename so user can verify before elevating.
+    {
+        std::wstring realName = FileNameFromPath(object.path);
+        // If config name differs from filesystem name, show both to detect spoofing.
+        std::wstring msg = L"即将以管理员身份运行以下文件：\n\n";
+        msg += L"路径： " + object.path + L"\n";
+        if (object.name != realName) {
+            msg += L"配置名称：" + object.name + L"\n";
+            msg += L"实际文件名：" + realName + L"\n";
+        }
+        msg += L"\n请确认这是您想要运行的程序。";
+        if (MessageBoxW(hwnd_, msg.c_str(), L"musuka — 管理员权限确认",
+                        MB_YESNO | MB_ICONWARNING) != IDYES) {
+            return;
+        }
+    }
     ShellExecuteChecked(hwnd_, L"runas", object.path);
 }
 
@@ -960,8 +1037,14 @@ void DesktopWindow::ShowContextMenu(int x, int y) {
     bool canRunAsAdmin = false;
     if (hasSelection && selectedObjectIndex_ < static_cast<int>(app_->Config().objects.size())) {
         const DesktopObject& object = app_->Config().objects[static_cast<size_t>(selectedObjectIndex_)];
-        canRunAsAdmin = object.type != DesktopObjectType::ThisPC &&
-                        object.type != DesktopObjectType::RecycleBin;
+        const bool isSystemObject = object.type == DesktopObjectType::ThisPC ||
+                                   object.type == DesktopObjectType::RecycleBin;
+        if (!isSystemObject && !object.path.empty()) {
+            const std::wstring ext = ExtensionLower(object.path);
+            canRunAsAdmin = ext == L".exe" || ext == L".bat" || ext == L".cmd" ||
+                             ext == L".ps1" || ext == L".vbs" || ext == L".vbe" ||
+                             ext == L".js"  || ext == L".wsf" || ext == L".msc";
+        }
     }
     AppendMenuW(menu, MF_STRING | (hasSelection ? MF_ENABLED : MF_GRAYED), ID_CONTEXT_OPEN, L"打开");
     AppendMenuW(menu, MF_STRING | (hasSelection ? MF_ENABLED : MF_GRAYED), ID_CONTEXT_OPEN_LOCATION, L"打开所在位置");

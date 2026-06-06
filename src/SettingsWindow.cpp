@@ -1020,11 +1020,29 @@ bool SettingsWindow::AddCandidateFromFile(DesktopObject& object, const std::wstr
         error = L"图片格式不支持。当前支持 PNG/JPG/JPEG/BMP。";
         return false;
     }
+    {
+        std::error_code ec;
+        const auto fileSize = fs::file_size(imagePath, ec);
+        if (!ec && fileSize > 10 * 1024 * 1024) { // 10 MB
+            error = L"图片文件过大（超过 10 MB）。";
+            return false;
+        }
+    }
     if (!ImageCanBeLoaded(imagePath)) {
         error = L"图片读取失败，可能不是有效图片文件。";
         return false;
     }
     const std::wstring objectDir = CombinePath(GetIconsDirectory(), object.id);
+    if (!IsPathInsideIconsRoot(objectDir)) {
+        error = L"对象目录路径异常，导入已拒绝。";
+        return false;
+    }
+    EnsureDirectory(objectDir);
+    // TOCTOU defense: verify objectDir is not a reparse point before writing.
+    if (IsReparsePoint(objectDir)) {
+        error = L"对象目录为重解析点，导入已拒绝。";
+        return false;
+    }
     std::wstring relative;
     if (!CopyFileToInternal(imagePath, objectDir, L"import", relative, error)) {
         return false;
