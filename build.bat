@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "BUILD_DIR=build-nmake"
@@ -35,7 +35,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-cmake -S . -B "%BUILD_DIR%" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
+set "CMAKE_EXTRA_ARGS=-DMUSUKA_USE_QT=OFF"
+if "%USE_QT%"=="1" (
+    set "CMAKE_EXTRA_ARGS=-DMUSUKA_USE_QT=ON"
+    if defined QT_PREFIX_PATH (
+        set "CMAKE_EXTRA_ARGS=!CMAKE_EXTRA_ARGS! -DCMAKE_PREFIX_PATH=%QT_PREFIX_PATH%"
+    )
+)
+
+cmake -S . -B "%BUILD_DIR%" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release !CMAKE_EXTRA_ARGS!
 if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%"
@@ -64,7 +72,6 @@ if exist "D:\DevTools\VSBuildTools2022\VC\Auxiliary\Build\vcvarsall.bat" (
     set "VCVARSALL_PATH=D:\DevTools\VSBuildTools2022\VC\Auxiliary\Build\vcvarsall.bat"
     exit /b 0
 )
-
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "%VSWHERE%" (
     for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
