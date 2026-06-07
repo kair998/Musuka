@@ -14,7 +14,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_executable(musuka WIN32
+# ── Qt 6 (optional) ──────────────────────────────────────────────
+option(MUSUKA_USE_QT "Enable Qt 6 Widgets UI support" OFF)
+
+if(MUSUKA_USE_QT)
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTOUIC ON)
+    set(CMAKE_AUTORCC ON)
+endif()
+
+set(MUSUKA_SOURCES
     src/main.cpp
     src/App.cpp
     src/ConfigStore.cpp
@@ -27,6 +36,8 @@ add_executable(musuka WIN32
     src/WinUtil.cpp
     src/Musuka.rc
 )
+
+add_executable(musuka WIN32 ${MUSUKA_SOURCES})
 
 target_compile_definitions(musuka PRIVATE
     UNICODE
@@ -50,3 +61,18 @@ target_link_libraries(musuka PRIVATE
     user32
     gdi32
 )
+
+if(MUSUKA_USE_QT)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+    target_sources(musuka PRIVATE
+        src/QtSettingsWindow.cpp
+        src/QtSettingsWindow.h
+    )
+    target_link_libraries(musuka PRIVATE Qt6::Widgets)
+    target_compile_definitions(musuka PRIVATE MUSUKA_USE_QT)
+
+    message(STATUS "musuka: Qt 6 UI support ENABLED")
+else()
+    message(STATUS "musuka: building without Qt (native Win32 UI only)")
+endif()

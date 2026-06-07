@@ -9,6 +9,8 @@
 #include <fstream>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <commctrl.h>
+#include <commoncontrols.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -212,6 +214,50 @@ HICON LoadShellIconForObject(const DesktopObject& object, bool large) {
         return info.hIcon;
     }
     return LoadStockIcon(SIID_APPLICATION, large);
+}
+
+// ---------------------------------------------------------------------------
+// Load a high-resolution icon for preview (256px via IImageList SHIL_JUMBO)
+// This is how Windows Explorer renders crisp Large Icons.
+// ---------------------------------------------------------------------------
+HICON LoadShellIconForPreview(const DesktopObject& object) {
+    const std::wstring shellPath = (object.type == DesktopObjectType::ThisPC ||
+                                   object.type == DesktopObjectType::RecycleBin)
+        ? OpenShellIdForObject(object)
+        : object.path;
+
+    // Get the icon index once, then ask the system jumbo image list for the
+    // actual high-resolution icon. SHGetFileInfo size flags only return the
+    // classic small/large lists and become blurry when enlarged.
+    SHFILEINFOW info{};
+    if (SHGetFileInfoW(shellPath.c_str(), 0, &info, sizeof(info),
+                       SHGFI_SYSICONINDEX) == 0) {
+        return LoadShellIconForObject(object, true);
+    }
+
+    using SHGetImageListFn = HRESULT(WINAPI*)(int, REFIID, void**);
+    HMODULE shell32 = GetModuleHandleW(L"shell32.dll");
+    const auto getImageList = shell32
+        ? reinterpret_cast<SHGetImageListFn>(GetProcAddress(shell32, "SHGetImageList"))
+        : nullptr;
+    if (getImageList) {
+        static const int kImageLists[] = {SHIL_JUMBO, SHIL_EXTRALARGE, SHIL_LARGE};
+        for (int imageListId : kImageLists) {
+            IImageList* imageList = nullptr;
+            if (SUCCEEDED(getImageList(imageListId, __uuidof(IImageList),
+                                       reinterpret_cast<void**>(&imageList))) &&
+                imageList) {
+                HICON icon = nullptr;
+                const HRESULT result = imageList->GetIcon(info.iIcon, ILD_TRANSPARENT, &icon);
+                imageList->Release();
+                if (SUCCEEDED(result) && icon) {
+                    return icon;
+                }
+            }
+        }
+    }
+
+    return LoadShellIconForObject(object, true);
 }
 
 HBITMAP CreateThumbnailBitmap(const std::wstring& imagePath, int width, int height) {

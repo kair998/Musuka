@@ -16,6 +16,7 @@ constexpr int kThumbnailSize = 96;
 
 bool SaveHIconAsPng(HICON icon, const std::wstring& path);
 HICON LoadShellIconForObject(const DesktopObject& object, bool large);
+HICON LoadShellIconForPreview(const DesktopObject& object);
 HBITMAP CreateThumbnailBitmap(const std::wstring& imagePath, int width, int height);
 bool ImageCanBeLoaded(const std::wstring& imagePath);
 std::unique_ptr<Gdiplus::Bitmap> LoadBitmapFromPath(const std::wstring& imagePath);
