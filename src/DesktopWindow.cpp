@@ -716,10 +716,6 @@ void DesktopWindow::Paint() {
             ? Gdiplus::InterpolationModeBilinear
             : Gdiplus::InterpolationModeHighQualityBicubic);
         graphics.DrawImage(item.bitmap.get(), item.rect);
-        if (IsObjectSelected(item.objectIndex)) {
-            Gdiplus::Pen pen(Gdiplus::Color(210, 40, 120, 230), 2.0f);
-            graphics.DrawRectangle(&pen, item.rect);
-        }
     }
     DrawSelectionBox(graphics);
     graphics.Flush();
@@ -761,12 +757,6 @@ void DesktopWindow::DrawItemLabel(HDC dc, const RenderItem& item, const RECT& di
     labelRect.right -= dirtyRect.left;
     labelRect.top -= dirtyRect.top;
     labelRect.bottom -= dirtyRect.top;
-
-    if (IsObjectSelected(item.objectIndex)) {
-        HBRUSH brush = CreateSolidBrush(RGB(45, 95, 175));
-        FillRect(dc, &labelRect, brush);
-        DeleteObject(brush);
-    }
 
     SetBkMode(dc, TRANSPARENT);
     HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));

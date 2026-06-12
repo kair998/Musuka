@@ -260,6 +260,93 @@ HICON LoadShellIconForPreview(const DesktopObject& object) {
     return LoadShellIconForObject(object, true);
 }
 
+// ---------------------------------------------------------------------------
+// Create a high-quality preview bitmap for a shell icon using GDI+ rendering.
+// Fixes two common issues with direct HICON->QImage conversion:
+//   1) White background/border on icons that use 1-bit mask transparency
+//   2) Jagged/aliased edges when upscaling small raster icons
+//
+// GDI+ DrawIcon() handles alpha compositing correctly, and we use
+// HighQualityBicubic interpolation for crisp scaling.
+// ---------------------------------------------------------------------------
+HBITMAP CreatePreviewBitmap(const DesktopObject& object, int size) {
+    // Step 1: Get max-resolution HICON from system image lists
+    const HICON hIcon = LoadShellIconForPreview(object);
+    if (!hIcon) {
+        return nullptr;
+    }
+
+    // Step 2: Get actual icon dimensions
+    ICONINFO iconInfo{};
+    if (!GetIconInfo(hIcon, &iconInfo)) {
+        DestroyIcon(hIcon);
+        return nullptr;
+    }
+
+    BITMAP bm{};
+    if (!GetObjectW(iconInfo.hbmColor ? iconInfo.hbmColor : iconInfo.hbmMask,
+                    sizeof(bm), &bm)) {
+        // Fallback: assume standard size
+        bm.bmWidth = bm.bmHeight = 256;
+    }
+    if (iconInfo.hbmColor) { DeleteObject(iconInfo.hbmColor); }
+    if (iconInfo.hbmMask)  { DeleteObject(iconInfo.hbmMask); }
+
+    const int srcW = bm.bmWidth;
+    const int srcH = (bm.bmHeight > 0) ? bm.bmHeight : srcW;
+
+    // Step 3: Create GDI+ ARGB bitmap for output (proper alpha channel)
+    Gdiplus::Bitmap* outBitmap = new Gdiplus::Bitmap(size, size,
+        PixelFormat32bppARGB);
+    if (!outBitmap || outBitmap->GetLastStatus() != Gdiplus::Ok) {
+        delete outBitmap;
+        DestroyIcon(hIcon);
+        return nullptr;
+    }
+
+    // Step 4: Render with high-quality settings
+    Gdiplus::Graphics graphics(outBitmap);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+
+    // Clear to transparent
+    graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+
+    // Calculate centered position (keep aspect ratio)
+    const float scale = static_cast<float>(std::min(size, size)) /
+                        static_cast<float>(std::max(srcW, srcH));
+    const int drawW = static_cast<int>(srcW * scale);
+    const int drawH = static_cast<int>(srcH * scale);
+    const int x = (size - drawW) / 2;
+    const int y = (size - drawH) / 2;
+
+    // DrawIcon handles alpha/mask correctly — no white background
+    // Note: GDI+ Graphics::DrawIcon only takes (x,y), so we convert
+    // HICON to Bitmap first, then DrawImage for scaled rendering.
+    std::unique_ptr<Gdiplus::Bitmap> iconBmp(
+        Gdiplus::Bitmap::FromHICON(hIcon));
+    DestroyIcon(hIcon);
+    if (!iconBmp || iconBmp->GetLastStatus() != Gdiplus::Ok) {
+        delete outBitmap;
+        return nullptr;
+    }
+
+    // Draw scaled (centered, keep aspect ratio)
+    const Gdiplus::RectF destRect(
+        static_cast<float>(x), static_cast<float>(y),
+        static_cast<float>(drawW), static_cast<float>(drawH));
+    graphics.DrawImage(iconBmp.get(), destRect);
+
+    // Step 5: Convert to HBITMAP for Qt consumption
+    HBITMAP hBitmap = nullptr;
+    outBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap);
+    delete outBitmap;
+    return hBitmap;
+}
+
 HBITMAP CreateThumbnailBitmap(const std::wstring& imagePath, int width, int height) {
     auto bitmap = LoadBitmapFromPath(ToAbsoluteAppPath(imagePath));
     if (!bitmap) {
