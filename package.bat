@@ -2,68 +2,57 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+if exist release (
+    rmdir /s /q release
+    if exist release (
+        echo [package] ERROR: release directory could not be cleared.
+        echo Close any running release\musuka.exe process and try again.
+        exit /b 1
+    )
+)
+
 call build.bat
 if errorlevel 1 exit /b 1
 
-if not exist release mkdir release
+mkdir release
+if errorlevel 1 exit /b 1
 
 copy /y build-nmake\musuka.exe release\musuka.exe >nul
+if errorlevel 1 exit /b 1
 
 if exist default_image (
-    if exist release\default_image rmdir /s /q release\default_image
     xcopy /e /i /y default_image release\default_image >nul
+    if errorlevel 2 exit /b 1
 ) else (
-    echo default_image directory does not exist. The release will run without built-in images.
-)
-
-copy /y README.md release\README.md >nul
-
-:: --- Qt deployment (windeployqt) ---
-:: Detect whether this build linked Qt by checking CMake cache for MUSUKA_USE_QT.
-set "USE_QT_DEPLOY=0"
-if exist "build-nmake\CMakeCache.txt" (
-    findstr /C:"MUSUKA_USE_QT:BOOL=ON" "build-nmake\CMakeCache.txt" >nul 2>nul
-    if not errorlevel 1 set "USE_QT_DEPLOY=1"
-)
-
-if "%USE_QT_DEPLOY%"=="1" (
-    call :DeployQt
+    mkdir release\default_image
     if errorlevel 1 exit /b 1
 )
-if "%USE_QT_DEPLOY%"=="0" echo [package] Native Win32 build (no Qt deployment needed).
 
-echo.
-echo Package complete: release\
-exit /b 0
-
-:DeployQt
-echo [package] Qt build detected, running windeployqt...
-set "WINDEPLOYQT="
-
-if defined QT_PREFIX_PATH if exist "%QT_PREFIX_PATH%\bin\windeployqt.exe" (
-    set "WINDEPLOYQT=%QT_PREFIX_PATH%\bin\windeployqt.exe"
+if exist data (
+    xcopy /e /i /y data release\data >nul
+    if errorlevel 2 exit /b 1
+) else (
+    mkdir release\data
+    if errorlevel 1 exit /b 1
 )
 
-if not defined WINDEPLOYQT (
-    for /f "delims=" %%I in ('where windeployqt.exe 2^>nul') do if not defined WINDEPLOYQT set "WINDEPLOYQT=%%I"
-)
-
-if not defined WINDEPLOYQT (
-    for /d %%D in ("C:\Qt\6.*\msvc2022_64") do if exist "%%D\bin\windeployqt.exe" set "WINDEPLOYQT=%%D\bin\windeployqt.exe"
-)
-
-if not defined WINDEPLOYQT (
-    echo [package] ERROR: windeployqt.exe not found.
-    echo Set QT_PREFIX_PATH or add the Qt bin directory to PATH.
-    exit /b 1
-)
-
-echo [package] Using %WINDEPLOYQT%
-"%WINDEPLOYQT%" --release --no-translations release\musuka.exe
+"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations release\musuka.exe
 if errorlevel 1 (
     echo [package] ERROR: windeployqt failed.
     exit /b 1
 )
 
-echo [package] Qt DLLs and plugins deployed to release\
+for %%F in (dxcompiler.dll dxil.dll concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vccorlib140.dll vcruntime140.dll vcruntime140_1.dll vcruntime140_threads.dll) do (
+    if exist "build-nmake\%%F" copy /y "build-nmake\%%F" "release\%%F" >nul
+)
+
+for %%F in (Qt6Core.dll Qt6Gui.dll Qt6Widgets.dll platforms\qwindows.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll vcruntime140.dll vcruntime140_1.dll) do (
+    if not exist "release\%%F" (
+        echo [package] ERROR: required Qt runtime is missing: %%F
+        exit /b 1
+    )
+)
+
+echo.
+echo Portable Qt package complete: release\
 exit /b 0

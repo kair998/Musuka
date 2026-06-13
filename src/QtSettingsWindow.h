@@ -1,7 +1,5 @@
 #pragma once
 
-#ifdef MUSUKA_USE_QT
-
 #include "Models.h"
 
 #include <QMainWindow>
@@ -131,5 +129,3 @@ private:
 };
 
 } // namespace musuka
-
-#endif // MUSUKA_USE_QT

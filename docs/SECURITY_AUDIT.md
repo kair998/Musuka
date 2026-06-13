@@ -1,9 +1,9 @@
 # 安全审计
 
 审计日期：2026-06-06
-最后更新：2026-06-06
+最后更新：2026-06-13
 
-本报告基于静态源码审查。项目没有自动化安全测试。
+本报告基于静态源码审查。项目已有集成冒烟测试，但尚无专门的自动化安全测试。
 
 ## 已修复
 
@@ -15,7 +15,7 @@
 - **`IsPathInsideIconsRoot()` 通用函数**：icons 根目录用 `fs::canonical`
   验证存在且真实；候选路径用 `fs::weakly_canonical` 解析
   （支持尚不存在的路径）；路径分隔符守卫的严格前缀匹配
-- `DesktopScanner::InitializeObjectImages`、`SettingsWindow::ImportImageForSelectedObject`
+- `DesktopScanner::InitializeObjectImages`、`QtSettingsWindow::addCandidateFromFile`
   统一调用 `IsPathInsideIconsRoot`
 - **加载时强制重新生成所有对象 ID**（不再依赖 JSON 中的原始 ID），
   使用 `MakeObjectId(name, stableKey)` 确保确定性；
@@ -25,7 +25,7 @@
 证据：
 - `src/Util.cpp:393-417`, `src/Util.h:49-55`
 - `src/DesktopScanner.cpp:273-284`
-- `src/SettingsWindow.cpp:1035-1045`
+- `src/QtSettingsWindow.cpp:1789-1799`
 - `src/ConfigStore.cpp:269-285`
 
 ### 中风险：图片解码拒绝服务（已修复）
@@ -100,11 +100,11 @@
 证据：
 - `src/Util.h:53-55`, `src/Util.cpp:413-417`
 - `src/DesktopScanner.cpp:279-284`
-- `src/SettingsWindow.cpp:1040-1045`
+- `src/QtSettingsWindow.cpp:1790-1799`
 
 ---
 
 ## 维护建议
 
-- README 和多处中文 UI 字符串在当前快照中出现乱码。
-- 没有自动化测试、静态分析配置、模糊测试或 CI。
+- 增加针对路径逃逸、恶意图片和损坏配置的专门安全回归测试。
+- 增加静态分析、模糊测试和 CI。

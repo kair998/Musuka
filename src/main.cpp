@@ -1,5 +1,7 @@
 #include "App.h"
 
+#include <QApplication>
+
 #include <objidl.h>
 #include <propidl.h>
 #include <gdiplus.h>
@@ -7,6 +9,11 @@
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
     SetProcessDPIAware();
+
+    int argc = 1;
+    char appName[] = "musuka";
+    char* argv[] = {appName, nullptr};
+    QApplication qtApplication(argc, argv);
 
     HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(comResult)) {

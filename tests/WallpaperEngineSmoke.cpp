@@ -1,8 +1,12 @@
 #include "App.h"
 #include "DesktopWindow.h"
-#include "SettingsWindow.h"
+#include "QtSettingsWindow.h"
 #include "Util.h"
 #include "WinUtil.h"
+
+#include <QApplication>
+#include <QLabel>
+#include <QRadioButton>
 
 #include <commctrl.h>
 #include <gdiplus.h>
@@ -17,12 +21,6 @@ namespace {
 constexpr wchar_t kHostClass[] = L"MusukaWallpaperSmokeHost";
 constexpr wchar_t kShellViewClass[] = L"SHELLDLL_DefView";
 constexpr COLORREF kTransparencyKey = RGB(1, 2, 3);
-constexpr int kModeEngineId = 1201;
-constexpr int kModeStaticWallpaperId = 1202;
-constexpr int kBackgroundSystemId = 1203;
-constexpr int kBackgroundSolidId = 1204;
-constexpr int kChooseColorId = 1205;
-constexpr int kColorPreviewId = 1206;
 
 LRESULT CALLBACK TestWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -68,83 +66,57 @@ int FailWithLastError(const char* message) {
     return 1;
 }
 
-std::wstring WindowText(HWND hwnd) {
-    const int length = GetWindowTextLengthW(hwnd);
-    std::wstring text(static_cast<size_t>(length + 1), L'\0');
-    GetWindowTextW(hwnd, text.data(), length + 1);
-    text.resize(static_cast<size_t>(length));
-    return text;
-}
-
 int ValidateSettingsModePage(musuka::App& app) {
     app.Config().desktopMode = musuka::DesktopMode::Wallpaper;
     app.Config().backgroundSource = musuka::BackgroundSource::SolidColor;
     app.Config().solidColor = RGB(12, 34, 56);
 
-    musuka::SettingsWindow settings(&app);
-    if (!settings.Create(2)) {
-        return Fail("Settings mode page creation failed");
+    musuka::QtSettingsWindow settings(&app);
+    settings.showPage(2);
+    QApplication::processEvents();
+
+    auto* engineMode = settings.findChild<QRadioButton*>(QStringLiteral("wallpaperEngineModeRadio"));
+    auto* staticMode = settings.findChild<QRadioButton*>(QStringLiteral("staticWallpaperModeRadio"));
+    auto* staticOptions = settings.findChild<QWidget*>(QStringLiteral("staticWallpaperOptions"));
+    auto* preview = settings.findChild<QLabel*>(QStringLiteral("colorPreviewLabel"));
+    if (!engineMode || !staticMode || !staticOptions || !preview) {
+        return Fail("Qt static wallpaper mode controls were not created");
+    }
+    if (engineMode->text() != QStringLiteral("Wallpaper Engine 动态壁纸兼容模式") ||
+        staticMode->text() != QStringLiteral("静态壁纸模式")) {
+        return Fail("Qt settings mode names are incorrect");
     }
 
-    HWND settingsWindow = FindWindowW(L"MusukaSettingsWindow", L"musuka settings");
-    HWND engineMode = GetDlgItem(settingsWindow, kModeEngineId);
-    HWND staticMode = GetDlgItem(settingsWindow, kModeStaticWallpaperId);
-    HWND preview = GetDlgItem(settingsWindow, kColorPreviewId);
-    if (!settingsWindow || !engineMode || !staticMode || !preview) {
-        return Fail("Static wallpaper mode controls were not created");
+    if (preview->width() != preview->height()) {
+        return Fail("Qt solid color preview is not square");
     }
-    if (WindowText(engineMode) != L"Wallpaper Engine 动态壁纸兼容模式" ||
-        WindowText(staticMode) != L"静态壁纸模式") {
-        return Fail("Settings mode names are incorrect");
+    if (!preview->styleSheet().contains(QStringLiteral("rgb(12, 34, 56)"))) {
+        return Fail("Qt solid color preview does not show the configured color");
     }
 
-    RECT previewRect{};
-    GetWindowRect(preview, &previewRect);
-    if (previewRect.right - previewRect.left != previewRect.bottom - previewRect.top) {
-        return Fail("Solid color preview is not square");
-    }
-    HDC screenDc = GetDC(nullptr);
-    HDC previewDc = CreateCompatibleDC(screenDc);
-    HBITMAP previewBitmap = CreateCompatibleBitmap(screenDc, 30, 30);
-    HGDIOBJ oldBitmap = SelectObject(previewDc, previewBitmap);
-    SendMessageW(preview, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(previewDc), PRF_CLIENT);
-    const COLORREF previewPixel = GetPixel(previewDc, 15, 15);
-    SelectObject(previewDc, oldBitmap);
-    DeleteObject(previewBitmap);
-    DeleteDC(previewDc);
-    ReleaseDC(nullptr, screenDc);
-    if (previewPixel != app.Config().solidColor) {
-        return Fail("Solid color preview does not show the configured color");
+    engineMode->click();
+    QApplication::processEvents();
+    if (staticOptions->isVisible()) {
+        return Fail("Qt static wallpaper options remain visible in dynamic wallpaper mode");
     }
 
-    SendMessageW(settingsWindow,
-                 WM_COMMAND,
-                 MAKEWPARAM(kModeEngineId, BN_CLICKED),
-                 reinterpret_cast<LPARAM>(engineMode));
-    if (GetDlgItem(settingsWindow, kBackgroundSystemId) ||
-        GetDlgItem(settingsWindow, kBackgroundSolidId) ||
-        GetDlgItem(settingsWindow, kChooseColorId) ||
-        GetDlgItem(settingsWindow, kColorPreviewId)) {
-        return Fail("Static wallpaper options remain visible in dynamic wallpaper mode");
+    staticMode->click();
+    QApplication::processEvents();
+    if (!staticOptions->isVisible()) {
+        return Fail("Qt static wallpaper options were not restored");
     }
-
-    staticMode = GetDlgItem(settingsWindow, kModeStaticWallpaperId);
-    SendMessageW(settingsWindow,
-                 WM_COMMAND,
-                 MAKEWPARAM(kModeStaticWallpaperId, BN_CLICKED),
-                 reinterpret_cast<LPARAM>(staticMode));
-    if (!GetDlgItem(settingsWindow, kBackgroundSystemId) ||
-        !GetDlgItem(settingsWindow, kBackgroundSolidId) ||
-        !GetDlgItem(settingsWindow, kChooseColorId) ||
-        !GetDlgItem(settingsWindow, kColorPreviewId)) {
-        return Fail("Static wallpaper options were not restored");
-    }
+    settings.hide();
     return 0;
 }
 
 } // namespace
 
 int main() {
+    int argc = 1;
+    char appName[] = "wallpaper_engine_smoke";
+    char* argv[] = {appName, nullptr};
+    QApplication qtApplication(argc, argv);
+
     HINSTANCE instance = GetModuleHandleW(nullptr);
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
         return Fail("COM initialization failed");

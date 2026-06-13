@@ -1,13 +1,33 @@
 @echo off
-setlocal EnableExtensions EnableDelayedExpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
 
-if not defined BUILD_DIR set "BUILD_DIR=build-nmake"
+set "BUILD_DIR=build-nmake"
 
 where cmake.exe >nul 2>nul
 if errorlevel 1 (
     echo CMake was not found in PATH.
     echo Install CMake 3.20 or newer and add cmake.exe to PATH.
+    exit /b 1
+)
+
+if not defined QT_PREFIX_PATH (
+    echo QT_PREFIX_PATH is not set.
+    echo Install Qt 6 for MSVC 2022 64-bit and set its installation path.
+    echo Example:
+    echo   set QT_PREFIX_PATH=C:\Qt\6.8.3\msvc2022_64
+    exit /b 1
+)
+
+if not exist "%QT_PREFIX_PATH%\lib\cmake\Qt6\Qt6Config.cmake" (
+    echo Qt 6 was not found at:
+    echo   %QT_PREFIX_PATH%
+    exit /b 1
+)
+
+if not exist "%QT_PREFIX_PATH%\bin\windeployqt.exe" (
+    echo windeployqt.exe was not found at:
+    echo   %QT_PREFIX_PATH%\bin\windeployqt.exe
     exit /b 1
 )
 
@@ -35,15 +55,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "CMAKE_EXTRA_ARGS=-DMUSUKA_USE_QT=OFF"
-if "%USE_QT%"=="1" (
-    set "CMAKE_EXTRA_ARGS=-DMUSUKA_USE_QT=ON"
-    if defined QT_PREFIX_PATH (
-        set "CMAKE_EXTRA_ARGS=!CMAKE_EXTRA_ARGS! -DCMAKE_PREFIX_PATH=%QT_PREFIX_PATH%"
-    )
-)
-
-cmake -S . -B "%BUILD_DIR%" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release !CMAKE_EXTRA_ARGS!
+cmake -U MUSUKA_USE_QT -S . -B "%BUILD_DIR%" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="%QT_PREFIX_PATH%"
 if errorlevel 1 exit /b 1
 
 cmake --build "%BUILD_DIR%"
@@ -56,8 +68,20 @@ if exist default_image (
     echo default_image directory does not exist. The program will run without built-in images.
 )
 
+"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations "%BUILD_DIR%\musuka.exe"
+if errorlevel 1 exit /b 1
+
+set "VC_RUNTIME_DIR=%VCToolsRedistDir%x64\Microsoft.VC143.CRT"
+if not exist "%VC_RUNTIME_DIR%\vcruntime140.dll" (
+    echo MSVC x64 runtime DLLs were not found at:
+    echo   %VC_RUNTIME_DIR%
+    exit /b 1
+)
+xcopy /y "%VC_RUNTIME_DIR%\*.dll" "%BUILD_DIR%\" >nul
+if errorlevel 2 exit /b 1
+
 echo.
-echo Build complete: %BUILD_DIR%\musuka.exe
+echo Qt build complete: %BUILD_DIR%\musuka.exe
 exit /b 0
 
 :FindVcVars

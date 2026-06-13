@@ -16,14 +16,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ── Qt 6 (optional) ──────────────────────────────────────────────
-option(MUSUKA_USE_QT "Enable Qt 6 Widgets UI support" OFF)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 
-if(MUSUKA_USE_QT)
-    set(CMAKE_AUTOMOC ON)
-    set(CMAKE_AUTOUIC ON)
-    set(CMAKE_AUTORCC ON)
-endif()
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 set(MUSUKA_SOURCES
     src/main.cpp
@@ -33,7 +30,8 @@ set(MUSUKA_SOURCES
     src/DesktopWindow.cpp
     src/ImageUtil.cpp
     src/Json.cpp
-    src/SettingsWindow.cpp
+    src/QtSettingsWindow.cpp
+    src/QtSettingsWindow.h
     src/Util.cpp
     src/WinUtil.cpp
     src/Musuka.rc
@@ -62,22 +60,10 @@ target_link_libraries(musuka PRIVATE
     shlwapi
     user32
     gdi32
+    Qt6::Widgets
 )
 
-if(MUSUKA_USE_QT)
-    find_package(Qt6 REQUIRED COMPONENTS Widgets)
-
-    target_sources(musuka PRIVATE
-        src/QtSettingsWindow.cpp
-        src/QtSettingsWindow.h
-    )
-    target_link_libraries(musuka PRIVATE Qt6::Widgets)
-    target_compile_definitions(musuka PRIVATE MUSUKA_USE_QT)
-
-    message(STATUS "musuka: Qt 6 UI support ENABLED")
-else()
-    message(STATUS "musuka: building without Qt (native Win32 UI only)")
-endif()
+message(STATUS "musuka: Qt 6 Widgets UI enabled")
 
 if(BUILD_TESTING)
     add_executable(wallpaper_engine_smoke
@@ -88,7 +74,8 @@ if(BUILD_TESTING)
         src/DesktopWindow.cpp
         src/ImageUtil.cpp
         src/Json.cpp
-        src/SettingsWindow.cpp
+        src/QtSettingsWindow.cpp
+        src/QtSettingsWindow.h
         src/Util.cpp
         src/WinUtil.cpp
         src/Musuka.rc
@@ -113,6 +100,7 @@ if(BUILD_TESTING)
         shlwapi
         user32
         gdi32
+        Qt6::Widgets
     )
     add_test(NAME wallpaper_engine_smoke COMMAND wallpaper_engine_smoke)
 endif()

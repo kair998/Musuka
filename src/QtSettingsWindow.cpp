@@ -1,5 +1,3 @@
-#ifdef MUSUKA_USE_QT
-
 #include "QtSettingsWindow.h"
 #include "App.h"
 #include "DesktopScanner.h"
@@ -568,6 +566,8 @@ QWidget* QtSettingsWindow::buildPage3() {
     modeEngineRadio_ = new QRadioButton(
         QStringLiteral("Wallpaper Engine 动态壁纸兼容模式"), modeCard);
     modeWallpaperRadio_ = new QRadioButton(QStringLiteral("静态壁纸模式"), modeCard);
+    modeEngineRadio_->setObjectName(QStringLiteral("wallpaperEngineModeRadio"));
+    modeWallpaperRadio_->setObjectName(QStringLiteral("staticWallpaperModeRadio"));
 
     auto* modeGroup = new QButtonGroup(page);
     modeGroup->addButton(modeEngineRadio_);
@@ -589,6 +589,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     // Background source group
     auto* backgroundCard = new QFrame(page);
     staticWallpaperOptions_ = backgroundCard;
+    backgroundCard->setObjectName(QStringLiteral("staticWallpaperOptions"));
     backgroundCard->setProperty("card", true);
     auto* backgroundLayout = new QVBoxLayout(backgroundCard);
     backgroundLayout->setContentsMargins(18, 14, 18, 16);
@@ -1540,6 +1541,8 @@ void QtSettingsWindow::applyStyleSheet() {
         QLabel#colorPreviewLabel {
             border: 2px solid #bbb;
             border-radius: 6px;
+            min-width: 36px;
+            max-width: 36px;
             min-height: 36px;
             max-height: 36px;
         }
@@ -1854,5 +1857,3 @@ ImageCandidate* QtSettingsWindow::selectedCandidate() {
 }
 
 } // namespace musuka
-
-#endif // MUSUKA_USE_QT
