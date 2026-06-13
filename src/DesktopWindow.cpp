@@ -98,6 +98,18 @@ int RectHeight(const RECT& rect) {
     return std::max(0L, rect.bottom - rect.top);
 }
 
+int LabelExtraWidthForSize(int iconSize) {
+    return std::clamp(iconSize / 2, kLabelExtraWidth, 160);
+}
+
+int LabelHeightForSize(int iconSize) {
+    return std::clamp(iconSize / 5 + 28, kLabelHeight, 72);
+}
+
+float LabelFontSizeForSize(int iconSize) {
+    return static_cast<float>(std::clamp(iconSize / 12 + 11, 13, 24));
+}
+
 RECT InflateCopy(RECT rect, int amount) {
     InflateRect(&rect, amount, amount);
     return rect;
@@ -105,8 +117,8 @@ RECT InflateCopy(RECT rect, int amount) {
 
 RECT PlacementBounds(const DesktopObject& object, bool showLabel, int x, int y) {
     const int size = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
-    const int labelOffset = showLabel ? kLabelExtraWidth / 2 : 0;
-    const int labelHeight = showLabel ? kLabelHeight + 4 : 0;
+    const int labelOffset = showLabel ? LabelExtraWidthForSize(size) / 2 : 0;
+    const int labelHeight = showLabel ? LabelHeightForSize(size) + 4 : 0;
     return RECT{
         x - labelOffset,
         y,
@@ -181,8 +193,8 @@ bool TryFindPlacement(const DesktopObject& object,
     const int width = RectWidth(client);
     const int height = RectHeight(client);
     const int size = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
-    const int labelOffset = showLabel ? kLabelExtraWidth / 2 : 0;
-    const int labelHeight = showLabel ? kLabelHeight + 4 : 0;
+    const int labelOffset = showLabel ? LabelExtraWidthForSize(size) / 2 : 0;
+    const int labelHeight = showLabel ? LabelHeightForSize(size) + 4 : 0;
     const int minX = kDesktopMargin + labelOffset;
     const int minY = kDesktopMargin;
     const int maxX = width - kDesktopMargin - size - labelOffset;
@@ -774,10 +786,11 @@ void DesktopWindow::RecalculateItemRect(RenderItem& item) {
                                  iconSize,
                                  iconSize);
     if (item.showLabel) {
-        item.labelRect = Gdiplus::RectF(static_cast<float>(object.x - kLabelExtraWidth / 2),
+        const int labelExtraWidth = LabelExtraWidthForSize(object.iconSize);
+        item.labelRect = Gdiplus::RectF(static_cast<float>(object.x - labelExtraWidth / 2),
                                         static_cast<float>(object.y + object.iconSize + 4),
-                                        static_cast<float>(object.iconSize + kLabelExtraWidth),
-                                        static_cast<float>(kLabelHeight));
+                                        static_cast<float>(object.iconSize + labelExtraWidth),
+                                        static_cast<float>(LabelHeightForSize(object.iconSize)));
         item.bounds = UnionBounds(item.bounds, item.labelRect);
     } else {
         item.labelRect = Gdiplus::RectF();
@@ -818,15 +831,12 @@ void DesktopWindow::Paint() {
             ? Gdiplus::InterpolationModeBilinear
             : Gdiplus::InterpolationModeHighQualityBicubic);
         graphics.DrawImage(item.bitmap.get(), item.rect);
+        if (item.showLabel) {
+            DrawItemLabel(graphics, item);
+        }
     }
     DrawSelectionBox(graphics);
     graphics.Flush();
-
-    for (const auto& item : items_) {
-        if (item.showLabel && RectFIntersectsRect(item.labelRect, dirty)) {
-            DrawItemLabel(memory, item, dirty);
-        }
-    }
 
     BitBlt(dc, dirty.left, dirty.top, dirtyWidth, dirtyHeight, memory, 0, 0, SRCCOPY);
     SelectObject(memory, oldBitmap);
@@ -860,31 +870,27 @@ void DesktopWindow::DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc) 
     graphics.Clear(color);
 }
 
-void DesktopWindow::DrawItemLabel(HDC dc, const RenderItem& item, const RECT& dirtyRect) {
-    RECT labelRect = RectFromRectF(item.labelRect);
-    labelRect.left -= dirtyRect.left;
-    labelRect.right -= dirtyRect.left;
-    labelRect.top -= dirtyRect.top;
-    labelRect.bottom -= dirtyRect.top;
+void DesktopWindow::DrawItemLabel(Gdiplus::Graphics& graphics, const RenderItem& item) {
+    const DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
+    Gdiplus::FontFamily family(L"Segoe UI");
+    Gdiplus::Font font(&family,
+                       LabelFontSizeForSize(object.iconSize),
+                       Gdiplus::FontStyleRegular,
+                       Gdiplus::UnitPixel);
+    Gdiplus::StringFormat format;
+    format.SetAlignment(Gdiplus::StringAlignmentCenter);
+    format.SetLineAlignment(Gdiplus::StringAlignmentNear);
+    format.SetTrimming(Gdiplus::StringTrimmingEllipsisWord);
+    format.SetFormatFlags(Gdiplus::StringFormatFlagsLineLimit);
 
-    SetBkMode(dc, TRANSPARENT);
-    HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-    HGDIOBJ oldFont = SelectObject(dc, font);
-    RECT shadowRect = labelRect;
-    OffsetRect(&shadowRect, 1, 1);
-    SetTextColor(dc, RGB(0, 0, 0));
-    DrawTextW(dc,
-              item.label.c_str(),
-              -1,
-              &shadowRect,
-              DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
-    SetTextColor(dc, RGB(255, 255, 255));
-    DrawTextW(dc,
-              item.label.c_str(),
-              -1,
-              &labelRect,
-              DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS);
-    SelectObject(dc, oldFont);
+    Gdiplus::RectF shadowRect = item.labelRect;
+    shadowRect.X += 1.0f;
+    shadowRect.Y += 1.0f;
+    Gdiplus::SolidBrush shadow(Gdiplus::Color(220, 0, 0, 0));
+    Gdiplus::SolidBrush text(Gdiplus::Color(255, 255, 255, 255));
+    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
+    graphics.DrawString(item.label.c_str(), -1, &font, shadowRect, &format, &shadow);
+    graphics.DrawString(item.label.c_str(), -1, &font, item.labelRect, &format, &text);
 }
 
 void DesktopWindow::DrawSelectionBox(Gdiplus::Graphics& graphics) {

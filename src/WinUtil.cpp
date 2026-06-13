@@ -43,12 +43,11 @@ HFONT LargerUiFont() {
         LOGFONTW logFont{};
         HFONT guiFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         GetObjectW(guiFont, sizeof(logFont), &logFont);
-        HDC dc = GetDC(nullptr);
-        const int dpiY = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
-        if (dc) {
-            ReleaseDC(nullptr, dc);
-        }
-        logFont.lfHeight = -MulDiv(11, dpiY, 72);
+        // The legacy window uses fixed-pixel coordinates. Scaling only its
+        // font at high DPI makes controls overlap, so keep the fallback font
+        // within the layout's fixed control heights. The Qt UI remains fully
+        // DPI-aware through its layout managers.
+        logFont.lfHeight = -16;
         logFont.lfWeight = FW_NORMAL;
         wcscpy_s(logFont.lfFaceName, L"Segoe UI");
         return CreateFontIndirectW(&logFont);

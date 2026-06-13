@@ -54,7 +54,7 @@ private:
     void RecalculateItemRect(RenderItem& item);
     void Paint();
     void DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc);
-    void DrawItemLabel(HDC dc, const RenderItem& item, const RECT& dirtyRect);
+    void DrawItemLabel(Gdiplus::Graphics& graphics, const RenderItem& item);
     void DrawSelectionBox(Gdiplus::Graphics& graphics);
     int HitTest(int x, int y) const;
     int FindItemByObjectIndex(int objectIndex) const;

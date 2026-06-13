@@ -55,7 +55,8 @@ bool OriginalIconNeedsRefresh(const std::wstring& path) {
     auto bitmap = LoadBitmapFromPath(path);
     constexpr UINT kMinHighResolutionIconSize = 128;
     return !bitmap ||
-           std::min(bitmap->GetWidth(), bitmap->GetHeight()) < kMinHighResolutionIconSize;
+           std::min(bitmap->GetWidth(), bitmap->GetHeight()) < kMinHighResolutionIconSize ||
+           BitmapHasOpaqueBlackBorder(bitmap.get());
 }
 
 bool RefreshOriginalIcon(const DesktopObject& object,

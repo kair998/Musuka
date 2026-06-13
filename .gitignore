@@ -1,5 +1,6 @@
 build/
 build-nmake/
+build-nmake-qt/
 release/
 data/
 *.user
