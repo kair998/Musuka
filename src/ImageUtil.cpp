@@ -260,6 +260,93 @@ HICON LoadShellIconForPreview(const DesktopObject& object) {
     return LoadShellIconForObject(object, true);
 }
 
+// ---------------------------------------------------------------------------
+// Create a high-quality preview bitmap for a shell icon using GDI+ rendering.
+// Fixes two common issues with direct HICON->QImage conversion:
+//   1) White background/border on icons that use 1-bit mask transparency
+//   2) Jagged/aliased edges when upscaling small raster icons
+//
+// GDI+ DrawIcon() handles alpha compositing correctly, and we use
+// HighQualityBicubic interpolation for crisp scaling.
+// ---------------------------------------------------------------------------
+HBITMAP CreatePreviewBitmap(const DesktopObject& object, int size) {
+    // Step 1: Get max-resolution HICON from system image lists
+    const HICON hIcon = LoadShellIconForPreview(object);
+    if (!hIcon) {
+        return nullptr;
+    }
+
+    // Step 2: Get actual icon dimensions
+    ICONINFO iconInfo{};
+    if (!GetIconInfo(hIcon, &iconInfo)) {
+        DestroyIcon(hIcon);
+        return nullptr;
+    }
+
+    BITMAP bm{};
+    if (!GetObjectW(iconInfo.hbmColor ? iconInfo.hbmColor : iconInfo.hbmMask,
+                    sizeof(bm), &bm)) {
+        // Fallback: assume standard size
+        bm.bmWidth = bm.bmHeight = 256;
+    }
+    if (iconInfo.hbmColor) { DeleteObject(iconInfo.hbmColor); }
+    if (iconInfo.hbmMask)  { DeleteObject(iconInfo.hbmMask); }
+
+    const int srcW = bm.bmWidth;
+    const int srcH = (bm.bmHeight > 0) ? bm.bmHeight : srcW;
+
+    // Step 3: Create GDI+ ARGB bitmap for output (proper alpha channel)
+    Gdiplus::Bitmap* outBitmap = new Gdiplus::Bitmap(size, size,
+        PixelFormat32bppARGB);
+    if (!outBitmap || outBitmap->GetLastStatus() != Gdiplus::Ok) {
+        delete outBitmap;
+        DestroyIcon(hIcon);
+        return nullptr;
+    }
+
+    // Step 4: Render with high-quality settings
+    Gdiplus::Graphics graphics(outBitmap);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHighQuality);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
+    graphics.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+
+    // Clear to transparent
+    graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+
+    // Calculate centered position (keep aspect ratio)
+    const float scale = static_cast<float>(std::min(size, size)) /
+                        static_cast<float>(std::max(srcW, srcH));
+    const int drawW = static_cast<int>(srcW * scale);
+    const int drawH = static_cast<int>(srcH * scale);
+    const int x = (size - drawW) / 2;
+    const int y = (size - drawH) / 2;
+
+    // DrawIcon handles alpha/mask correctly — no white background
+    // Note: GDI+ Graphics::DrawIcon only takes (x,y), so we convert
+    // HICON to Bitmap first, then DrawImage for scaled rendering.
+    std::unique_ptr<Gdiplus::Bitmap> iconBmp(
+        Gdiplus::Bitmap::FromHICON(hIcon));
+    DestroyIcon(hIcon);
+    if (!iconBmp || iconBmp->GetLastStatus() != Gdiplus::Ok) {
+        delete outBitmap;
+        return nullptr;
+    }
+
+    // Draw scaled (centered, keep aspect ratio)
+    const Gdiplus::RectF destRect(
+        static_cast<float>(x), static_cast<float>(y),
+        static_cast<float>(drawW), static_cast<float>(drawH));
+    graphics.DrawImage(iconBmp.get(), destRect);
+
+    // Step 5: Convert to HBITMAP for Qt consumption
+    HBITMAP hBitmap = nullptr;
+    outBitmap->GetHBITMAP(Gdiplus::Color(0, 0, 0, 0), &hBitmap);
+    delete outBitmap;
+    return hBitmap;
+}
+
 HBITMAP CreateThumbnailBitmap(const std::wstring& imagePath, int width, int height) {
     auto bitmap = LoadBitmapFromPath(ToAbsoluteAppPath(imagePath));
     if (!bitmap) {
@@ -318,6 +405,103 @@ std::unique_ptr<Gdiplus::Bitmap> LoadBitmapFromPath(const std::wstring& imagePat
         return nullptr;
     }
     return bitmap;
+}
+
+std::unique_ptr<Gdiplus::Bitmap> PrepareBitmapForScaling(std::unique_ptr<Gdiplus::Bitmap> bitmap) {
+    if (!bitmap || !BitmapHasAlpha(bitmap.get())) {
+        return bitmap;
+    }
+
+    const UINT width = bitmap->GetWidth();
+    const UINT height = bitmap->GetHeight();
+    auto prepared = std::make_unique<Gdiplus::Bitmap>(width, height, PixelFormat32bppARGB);
+    if (prepared->GetLastStatus() != Gdiplus::Ok) {
+        return bitmap;
+    }
+
+    Gdiplus::Graphics graphics(prepared.get());
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    graphics.DrawImage(bitmap.get(), 0, 0, static_cast<INT>(width), static_cast<INT>(height));
+    graphics.Flush();
+
+    Gdiplus::Rect lockRect(0, 0, static_cast<INT>(width), static_cast<INT>(height));
+    Gdiplus::BitmapData data{};
+    if (prepared->LockBits(&lockRect,
+                           Gdiplus::ImageLockModeRead | Gdiplus::ImageLockModeWrite,
+                           PixelFormat32bppARGB,
+                           &data) != Gdiplus::Ok) {
+        return bitmap;
+    }
+
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    std::vector<Gdiplus::ARGB> bleedColors(pixelCount);
+    std::vector<BYTE> originalAlpha(pixelCount);
+    for (UINT y = 0; y < height; ++y) {
+        const auto* source = reinterpret_cast<const Gdiplus::ARGB*>(
+            static_cast<const BYTE*>(data.Scan0) + static_cast<ptrdiff_t>(y) * data.Stride);
+        for (UINT x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            bleedColors[index] = source[x];
+            originalAlpha[index] = static_cast<BYTE>(source[x] >> 24);
+        }
+    }
+
+    // Transparent PNG pixels often retain a white matte in their RGB channels.
+    // Scaling samples those hidden colors and creates a bright halo. Expand
+    // visible edge colors through two transparent pixels, which covers the
+    // resampling footprint without an expensive per-pixel radius search.
+    std::vector<BYTE> filled(pixelCount);
+    for (size_t index = 0; index < pixelCount; ++index) {
+        filled[index] = originalAlpha[index] >= 240 ? 1 : 0;
+    }
+    constexpr int kBleedPasses = 2;
+    for (int pass = 0; pass < kBleedPasses; ++pass) {
+        std::vector<BYTE> nextFilled = filled;
+        for (UINT y = 0; y < height; ++y) {
+            for (UINT x = 0; x < width; ++x) {
+                const size_t index = static_cast<size_t>(y) * width + x;
+                if (filled[index]) {
+                    continue;
+                }
+                for (int dy = -1; dy <= 1 && !nextFilled[index]; ++dy) {
+                    const int sampleY = static_cast<int>(y) + dy;
+                    if (sampleY < 0 || sampleY >= static_cast<int>(height)) {
+                        continue;
+                    }
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int sampleX = static_cast<int>(x) + dx;
+                        if ((dx == 0 && dy == 0) ||
+                            sampleX < 0 || sampleX >= static_cast<int>(width)) {
+                            continue;
+                        }
+                        const size_t sampleIndex =
+                            static_cast<size_t>(sampleY) * width + static_cast<UINT>(sampleX);
+                        if (filled[sampleIndex]) {
+                            bleedColors[index] = bleedColors[sampleIndex];
+                            nextFilled[index] = 1;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        filled.swap(nextFilled);
+    }
+
+    for (UINT y = 0; y < height; ++y) {
+        auto* destination = reinterpret_cast<Gdiplus::ARGB*>(
+            static_cast<BYTE*>(data.Scan0) + static_cast<ptrdiff_t>(y) * data.Stride);
+        for (UINT x = 0; x < width; ++x) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            const Gdiplus::ARGB alpha = static_cast<Gdiplus::ARGB>(originalAlpha[index]) << 24;
+            if (originalAlpha[index] < 240 && filled[index]) {
+                destination[x] = alpha | (bleedColors[index] & 0x00FFFFFFu);
+            }
+        }
+    }
+
+    prepared->UnlockBits(&data);
+    return prepared;
 }
 
 bool BitmapHasAlpha(Gdiplus::Bitmap* bitmap) {

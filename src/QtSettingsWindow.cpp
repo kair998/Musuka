@@ -1676,22 +1676,23 @@ void QtSettingsWindow::drawPreview() {
         return;
     }
 
-    // If this is the original shell icon, load it at high resolution
-    // using IImageList (like Windows Explorer does for Large Icons view)
-    // so scaling stays crisp.
+    // If this is the original shell icon, render it with GDI+ for
+    // high-quality scaling and proper alpha (no white background/border).
     if (candidate.originalIcon) {
-        HICON hIcon = LoadShellIconForPreview(*object);
-        if (hIcon) {
-            QPixmap pix = QPixmap::fromImage(QImage::fromHICON(hIcon));
-            DestroyIcon(hIcon);
-            constexpr int kPreviewIconSize = 220;
-            const QPixmap scaled = pix.scaled(
-                kPreviewIconSize, kPreviewIconSize,
-                Qt::KeepAspectRatio,
-                Qt::SmoothTransformation);
-            previewLabel_->setPixmap(scaled);
-            previewLabel_->setAlignment(Qt::AlignCenter);
-            previewLabel_->setText(QString());
+        constexpr int kPreviewIconSize = 220;
+        const HBITMAP hBmp = CreatePreviewBitmap(*object, kPreviewIconSize);
+        if (hBmp) {
+            // QImage::fromHBITMAP preserves alpha on 32bpp ARGB DIB sections
+            const QImage img = QImage::fromHBITMAP(hBmp);
+            DeleteObject(hBmp);
+            if (!img.isNull()) {
+                previewLabel_->setPixmap(QPixmap::fromImage(img));
+                previewLabel_->setAlignment(Qt::AlignCenter);
+                previewLabel_->setText(QString());
+            } else {
+                previewLabel_->setPixmap(QPixmap());
+                previewLabel_->setText(tr("\u539F\u59CB\u56FE\u6807"));
+            }
         } else {
             previewLabel_->setPixmap(QPixmap());
             previewLabel_->setText(tr("\u539F\u59CB\u56FE\u6807"));

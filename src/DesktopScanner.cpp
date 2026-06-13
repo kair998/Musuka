@@ -48,6 +48,41 @@ bool HasOriginalIconCandidate(const DesktopObject& object) {
     });
 }
 
+bool OriginalIconNeedsRefresh(const std::wstring& path) {
+    if (!FileExists(path)) {
+        return true;
+    }
+    auto bitmap = LoadBitmapFromPath(path);
+    constexpr UINT kMinHighResolutionIconSize = 128;
+    return !bitmap ||
+           std::min(bitmap->GetWidth(), bitmap->GetHeight()) < kMinHighResolutionIconSize;
+}
+
+bool RefreshOriginalIcon(const DesktopObject& object,
+                         const std::wstring& objectDir,
+                         const std::wstring& originalIconPath) {
+    HICON icon = LoadShellIconForPreview(object);
+    if (!icon) {
+        return false;
+    }
+
+    const std::wstring tempPath = MakeUniqueFilePath(objectDir, L"original_icon_refresh.png");
+    const bool saved = SaveHIconAsPng(icon, tempPath);
+    DestroyIcon(icon);
+    if (!saved) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+
+    if (!MoveFileExW(tempPath.c_str(),
+                     originalIconPath.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DeleteFileW(tempPath.c_str());
+        return false;
+    }
+    return true;
+}
+
 bool PathIsInsideDirectory(const std::wstring& path, const std::wstring& directory) {
     const std::wstring normalizedPath = NormalizePathForCompare(path);
     std::wstring normalizedDirectory = NormalizePathForCompare(directory);
@@ -295,12 +330,8 @@ void DesktopScanner::InitializeObjectImages(DesktopObject& object, std::wstring&
     PruneDefaultCandidates(object, objectDir, defaultDir);
 
     const std::wstring originalIconPath = CombinePath(objectDir, L"original_icon.png");
-    if (!FileExists(originalIconPath)) {
-        HICON icon = LoadShellIconForObject(object, true);
-        if (icon) {
-            SaveHIconAsPng(icon, originalIconPath);
-            DestroyIcon(icon);
-        }
+    if (OriginalIconNeedsRefresh(originalIconPath)) {
+        RefreshOriginalIcon(object, objectDir, originalIconPath);
     }
 
     const bool wasMissingCandidates = object.candidates.empty();
