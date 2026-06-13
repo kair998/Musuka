@@ -5,6 +5,7 @@
 ## 更新索引
 
 - [2026-06-13：当前开发版本更新总结](2026-06-13-current-development-summary.md)
+- [2026-06-13：图标预览、尺寸与框选反馈修复](2026-06-13-icon-preview-size-and-selection.md)
 - [2026-06-13：仅 Qt 构建与可运行发布包](2026-06-13-qt-only-build.md)
 - [2026-06-13：Wallpaper Engine 兼容与桌面显示改进](2026-06-13-wallpaper-engine-and-desktop.md)
 

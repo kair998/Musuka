@@ -1,5 +1,6 @@
 #include "App.h"
 #include "DesktopWindow.h"
+#include "ImageUtil.h"
 #include "QtSettingsWindow.h"
 #include "Util.h"
 #include "WinUtil.h"
@@ -14,6 +15,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <memory>
 #include <utility>
 
 namespace {
@@ -109,6 +111,24 @@ int ValidateSettingsModePage(musuka::App& app) {
     return 0;
 }
 
+int ValidateTinyTransparentCanvasTrimming() {
+    auto bitmap = std::make_unique<Gdiplus::Bitmap>(256, 256, PixelFormat32bppARGB);
+    {
+        Gdiplus::Graphics graphics(bitmap.get());
+        graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+        graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+        Gdiplus::SolidBrush visible(Gdiplus::Color(255, 40, 120, 220));
+        graphics.FillRectangle(&visible, 112, 112, 32, 32);
+        graphics.Flush();
+    }
+
+    bitmap = musuka::TrimTinyTransparentCanvas(std::move(bitmap));
+    if (!bitmap || bitmap->GetWidth() >= 96 || bitmap->GetHeight() >= 96) {
+        return Fail("Tiny native icon content was not trimmed from its transparent canvas");
+    }
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -134,18 +154,20 @@ int main() {
     app.Config().desktopMode = musuka::DesktopMode::WallpaperEngine;
     app.Config().objects.clear();
 
-    musuka::DesktopObject object;
-    object.name = L"Wallpaper smoke icon";
-    object.includeInDesktop = true;
-    object.x = 24;
-    object.y = 24;
-    object.iconSize = musuka::kReplacementImageDefaultSize;
-    musuka::ImageCandidate candidate;
-    candidate.displayName = L"Musuka";
-    candidate.internalPath = musuka::CombinePath(musuka::GetDefaultImageDirectory(), L"Musuka.png");
-    object.candidates.push_back(candidate);
-    musuka::SelectObjectCandidate(object, 0);
-    app.Config().objects.push_back(std::move(object));
+    for (int i = 0; i < 8; ++i) {
+        musuka::DesktopObject object;
+        object.name = L"Wallpaper smoke icon";
+        object.includeInDesktop = true;
+        object.x = -1;
+        object.y = -1;
+        object.iconSize = musuka::kDesktopIconMaxSize;
+        musuka::ImageCandidate candidate;
+        candidate.displayName = L"Musuka";
+        candidate.internalPath = musuka::CombinePath(musuka::GetDefaultImageDirectory(), L"Musuka.png");
+        object.candidates.push_back(candidate);
+        musuka::SelectObjectCandidate(object, 0);
+        app.Config().objects.push_back(std::move(object));
+    }
 
     if (!RegisterTestClass(instance, kHostClass) ||
         !RegisterTestClass(instance, kShellViewClass)) {
@@ -199,10 +221,11 @@ int main() {
         return Fail("Fake Explorer desktop hierarchy creation failed");
     }
 
-    int result = 0;
+    int result = ValidateTinyTransparentCanvasTrimming();
     {
-        if (musuka::FindDesktopHostWindow() != host ||
-            musuka::FindDesktopIconListView() != iconList) {
+        if (result == 0 &&
+            (musuka::FindDesktopHostWindow() != host ||
+             musuka::FindDesktopIconListView() != iconList)) {
             result = Fail("Fake Explorer desktop hierarchy was not discovered");
         }
         musuka::DesktopWindow desktop(&app);
@@ -234,6 +257,14 @@ int main() {
                     result = Fail("Explorer desktop icons were not hidden");
                 } else if (!RenderedIconPixelExists(musukaWindow)) {
                     result = Fail("Replacement icon was not rendered");
+                }
+                if (result == 0) {
+                    for (const auto& configuredObject : app.Config().objects) {
+                        if (configuredObject.iconSize != musuka::kDesktopIconMaxSize) {
+                            result = Fail("Auto-arrange changed a configured icon size");
+                            break;
+                        }
+                    }
                 }
 
                 desktop.Hide();

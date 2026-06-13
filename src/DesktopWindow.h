@@ -55,6 +55,7 @@ private:
     void Paint();
     void DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc);
     void DrawItemLabel(Gdiplus::Graphics& graphics, const RenderItem& item);
+    void DrawSelectionHighlight(Gdiplus::Graphics& graphics, const RenderItem& item);
     void DrawSelectionBox(Gdiplus::Graphics& graphics);
     int HitTest(int x, int y) const;
     int FindItemByObjectIndex(int objectIndex) const;
@@ -65,7 +66,6 @@ private:
     RECT CurrentSelectionBoxRect() const;
     void InvalidateRenderItem(const RenderItem& item);
     void InvalidateRenderRect(const Gdiplus::RectF& rect);
-    void InvalidateSelectionBox(const RECT& rect);
     void ScaleSelectedObjects(int delta);
     void OpenObject(int objectIndex);
     void OpenContainingLocation(int objectIndex);

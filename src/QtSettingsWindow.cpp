@@ -1679,8 +1679,8 @@ void QtSettingsWindow::drawPreview() {
         constexpr int kPreviewIconSize = 220;
         const HBITMAP hBmp = CreatePreviewBitmap(*object, kPreviewIconSize);
         if (hBmp) {
-            // QImage::fromHBITMAP preserves alpha on 32bpp ARGB DIB sections
-            const QImage img = QImage::fromHBITMAP(hBmp);
+            // GDI+ exports a bottom-up HBITMAP, while Qt displays scanlines top-down.
+            const QImage img = QImage::fromHBITMAP(hBmp).mirrored(false, true);
             DeleteObject(hBmp);
             if (!img.isNull()) {
                 previewLabel_->setPixmap(QPixmap::fromImage(img));

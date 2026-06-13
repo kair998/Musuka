@@ -503,11 +503,10 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
         } else if (selectingBox_ && (wParam & MK_LBUTTON) != 0) {
-            const RECT oldRect = CurrentSelectionBoxRect();
             selectionCurrent_.x = GET_X_LPARAM(lParam);
             selectionCurrent_.y = GET_Y_LPARAM(lParam);
-            InvalidateSelectionBox(oldRect);
-            InvalidateSelectionBox(CurrentSelectionBoxRect());
+            SelectObjectsInBox();
+            InvalidateRect(hwnd_, nullptr, FALSE);
         }
         return 0;
     case WM_MOUSEWHEEL:
@@ -660,6 +659,9 @@ void DesktopWindow::LoadAssets() {
         if (!bitmap) {
             continue;
         }
+        if (selectedCandidate->originalIcon) {
+            bitmap = TrimTinyTransparentCanvas(std::move(bitmap));
+        }
         bitmap = PrepareBitmapForScaling(std::move(bitmap));
 
         RenderItem item;
@@ -728,27 +730,10 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         DesktopObject& object = app_->Config().objects[static_cast<size_t>(item.objectIndex)];
         const int originalX = object.x;
         const int originalY = object.y;
-        const int originalSize = std::clamp(object.iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
         const int gap = AutoArrangeGapForItem(item.showLabel);
 
-        std::vector<int> sizes;
-        for (int size = originalSize; size > kDesktopIconMinSize; size -= kIconScaleStep) {
-            sizes.push_back(size);
-        }
-        sizes.push_back(kDesktopIconMinSize);
-
-        bool placed = false;
         POINT placement{};
-        for (int size : sizes) {
-            object.iconSize = size;
-            if (TryFindPlacement(object, item.showLabel, rc, occupied, gap, placement)) {
-                placed = true;
-                break;
-            }
-        }
-
-        if (!placed) {
-            object.iconSize = originalSize;
+        if (!TryFindPlacement(object, item.showLabel, rc, occupied, gap, placement)) {
             continue;
         }
 
@@ -756,7 +741,7 @@ void DesktopWindow::AutoArrangeMissingPositions() {
         object.y = placement.y;
         occupied.push_back(InflateCopy(PlacementBounds(object, item.showLabel, object.x, object.y),
                                        gap));
-        if (object.x != originalX || object.y != originalY || object.iconSize != originalSize) {
+        if (object.x != originalX || object.y != originalY) {
             changed = true;
         }
     }
@@ -830,6 +815,9 @@ void DesktopWindow::Paint() {
         graphics.SetInterpolationMode(enlarging
             ? Gdiplus::InterpolationModeBilinear
             : Gdiplus::InterpolationModeHighQualityBicubic);
+        if (IsObjectSelected(item.objectIndex)) {
+            DrawSelectionHighlight(graphics, item);
+        }
         graphics.DrawImage(item.bitmap.get(), item.rect);
         if (item.showLabel) {
             DrawItemLabel(graphics, item);
@@ -893,6 +881,18 @@ void DesktopWindow::DrawItemLabel(Gdiplus::Graphics& graphics, const RenderItem&
     graphics.DrawString(item.label.c_str(), -1, &font, item.labelRect, &format, &text);
 }
 
+void DesktopWindow::DrawSelectionHighlight(Gdiplus::Graphics& graphics, const RenderItem& item) {
+    constexpr Gdiplus::REAL kHighlightPadding = 3.0f;
+    const Gdiplus::RectF highlight(item.bounds.X - kHighlightPadding,
+                                   item.bounds.Y - kHighlightPadding,
+                                   item.bounds.Width + kHighlightPadding * 2.0f,
+                                   item.bounds.Height + kHighlightPadding * 2.0f);
+    Gdiplus::SolidBrush brush(Gdiplus::Color(76, 0, 120, 215));
+    Gdiplus::Pen pen(Gdiplus::Color(235, 110, 190, 255), 2.0f);
+    graphics.FillRectangle(&brush, highlight);
+    graphics.DrawRectangle(&pen, highlight);
+}
+
 void DesktopWindow::DrawSelectionBox(Gdiplus::Graphics& graphics) {
     if (!selectingBox_) {
         return;
@@ -902,8 +902,8 @@ void DesktopWindow::DrawSelectionBox(Gdiplus::Graphics& graphics) {
                              static_cast<Gdiplus::REAL>(rect.top),
                              static_cast<Gdiplus::REAL>(rect.right - rect.left),
                              static_cast<Gdiplus::REAL>(rect.bottom - rect.top));
-    Gdiplus::SolidBrush brush(Gdiplus::Color(44, 78, 136, 210));
-    Gdiplus::Pen pen(Gdiplus::Color(180, 70, 130, 220), 1.0f);
+    Gdiplus::SolidBrush brush(Gdiplus::Color(72, 0, 120, 215));
+    Gdiplus::Pen pen(Gdiplus::Color(255, 110, 190, 255), 2.0f);
     graphics.FillRectangle(&brush, box);
     graphics.DrawRectangle(&pen, box);
 }
@@ -987,12 +987,6 @@ void DesktopWindow::InvalidateRenderItem(const RenderItem& item) {
 void DesktopWindow::InvalidateRenderRect(const Gdiplus::RectF& rect) {
     RECT native = RectFromRectF(rect);
     InvalidateRect(hwnd_, &native, FALSE);
-}
-
-void DesktopWindow::InvalidateSelectionBox(const RECT& rect) {
-    RECT expanded = rect;
-    InflateRect(&expanded, 3, 3);
-    InvalidateRect(hwnd_, &expanded, FALSE);
 }
 
 void DesktopWindow::ScaleSelectedObjects(int delta) {

@@ -21,6 +21,7 @@ HBITMAP CreatePreviewBitmap(const DesktopObject& object, int size);
 HBITMAP CreateThumbnailBitmap(const std::wstring& imagePath, int width, int height);
 bool ImageCanBeLoaded(const std::wstring& imagePath);
 std::unique_ptr<Gdiplus::Bitmap> LoadBitmapFromPath(const std::wstring& imagePath);
+std::unique_ptr<Gdiplus::Bitmap> TrimTinyTransparentCanvas(std::unique_ptr<Gdiplus::Bitmap> bitmap);
 std::unique_ptr<Gdiplus::Bitmap> PrepareBitmapForScaling(std::unique_ptr<Gdiplus::Bitmap> bitmap);
 bool BitmapHasAlpha(Gdiplus::Bitmap* bitmap);
 bool BitmapHasOpaqueBlackBorder(Gdiplus::Bitmap* bitmap);

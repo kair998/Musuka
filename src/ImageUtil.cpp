@@ -422,6 +422,7 @@ HBITMAP CreatePreviewBitmap(const DesktopObject& object, int size) {
         delete outBitmap;
         return nullptr;
     }
+    iconBmp = TrimTinyTransparentCanvas(std::move(iconBmp));
 
     // Draw scaled (centered, keep aspect ratio)
     const Gdiplus::RectF destRect(
@@ -494,6 +495,85 @@ std::unique_ptr<Gdiplus::Bitmap> LoadBitmapFromPath(const std::wstring& imagePat
         return nullptr;
     }
     return bitmap;
+}
+
+std::unique_ptr<Gdiplus::Bitmap> TrimTinyTransparentCanvas(std::unique_ptr<Gdiplus::Bitmap> bitmap) {
+    if (!bitmap || !BitmapHasAlpha(bitmap.get())) {
+        return bitmap;
+    }
+
+    const INT width = static_cast<INT>(bitmap->GetWidth());
+    const INT height = static_cast<INT>(bitmap->GetHeight());
+    if (width <= 0 || height <= 0) {
+        return bitmap;
+    }
+
+    Gdiplus::Rect lockRect(0, 0, width, height);
+    Gdiplus::BitmapData data{};
+    if (bitmap->LockBits(&lockRect,
+                         Gdiplus::ImageLockModeRead,
+                         PixelFormat32bppARGB,
+                         &data) != Gdiplus::Ok) {
+        return bitmap;
+    }
+
+    constexpr BYTE kVisibleAlphaThreshold = 20;
+    INT minX = width;
+    INT minY = height;
+    INT maxX = -1;
+    INT maxY = -1;
+    for (INT y = 0; y < height; ++y) {
+        const auto* row = reinterpret_cast<const Gdiplus::ARGB*>(
+            static_cast<const BYTE*>(data.Scan0) + static_cast<ptrdiff_t>(y) * data.Stride);
+        for (INT x = 0; x < width; ++x) {
+            if (static_cast<BYTE>(row[x] >> 24) < kVisibleAlphaThreshold) {
+                continue;
+            }
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+    }
+    bitmap->UnlockBits(&data);
+
+    if (maxX < minX || maxY < minY) {
+        return bitmap;
+    }
+
+    const INT contentWidth = maxX - minX + 1;
+    const INT contentHeight = maxY - minY + 1;
+    const INT contentExtent = std::max(contentWidth, contentHeight);
+    const INT canvasExtent = std::max(width, height);
+    if (contentExtent * 5 >= canvasExtent * 3) {
+        return bitmap;
+    }
+
+    const INT padding = std::max(1, contentExtent / 12);
+    const INT cropX = std::max(0, minX - padding);
+    const INT cropY = std::max(0, minY - padding);
+    const INT cropRight = std::min(width, maxX + padding + 1);
+    const INT cropBottom = std::min(height, maxY + padding + 1);
+    const INT cropWidth = cropRight - cropX;
+    const INT cropHeight = cropBottom - cropY;
+
+    auto cropped = std::make_unique<Gdiplus::Bitmap>(cropWidth, cropHeight, PixelFormat32bppARGB);
+    if (!cropped || cropped->GetLastStatus() != Gdiplus::Ok) {
+        return bitmap;
+    }
+
+    Gdiplus::Graphics graphics(cropped.get());
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+    graphics.DrawImage(bitmap.get(),
+                       Gdiplus::Rect(0, 0, cropWidth, cropHeight),
+                       cropX,
+                       cropY,
+                       cropWidth,
+                       cropHeight,
+                       Gdiplus::UnitPixel);
+    graphics.Flush();
+    return cropped;
 }
 
 std::unique_ptr<Gdiplus::Bitmap> PrepareBitmapForScaling(std::unique_ptr<Gdiplus::Bitmap> bitmap) {
