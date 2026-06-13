@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
-set "BUILD_DIR=build-nmake"
+if not defined BUILD_DIR set "BUILD_DIR=build-nmake"
 
 where cmake.exe >nul 2>nul
 if errorlevel 1 (

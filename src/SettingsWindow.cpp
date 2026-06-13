@@ -109,12 +109,7 @@ SettingsWindow::SettingsWindow(App* app) : app_(app) {
     LOGFONTW logFont{};
     HFONT guiFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
     GetObjectW(guiFont, sizeof(logFont), &logFont);
-    HDC dc = GetDC(nullptr);
-    const int dpiY = dc ? GetDeviceCaps(dc, LOGPIXELSY) : 96;
-    if (dc) {
-        ReleaseDC(nullptr, dc);
-    }
-    logFont.lfHeight = -MulDiv(11, dpiY, 72);
+    logFont.lfHeight = -16;
     wcscpy_s(logFont.lfFaceName, L"Segoe UI");
     logFont.lfStrikeOut = TRUE;
     strikeFont_ = CreateFontIndirectW(&logFont);

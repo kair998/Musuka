@@ -49,6 +49,96 @@ HICON LoadStockIcon(SHSTOCKICONID id, bool large) {
     return nullptr;
 }
 
+bool IsOpaqueBlack(Gdiplus::ARGB pixel) {
+    constexpr BYTE kBlackThreshold = 12;
+    return static_cast<BYTE>(pixel >> 24) >= 240 &&
+           static_cast<BYTE>(pixel >> 16) <= kBlackThreshold &&
+           static_cast<BYTE>(pixel >> 8) <= kBlackThreshold &&
+           static_cast<BYTE>(pixel) <= kBlackThreshold;
+}
+
+std::unique_ptr<Gdiplus::Bitmap> NormalizeHIconTransparency(HICON icon) {
+    std::unique_ptr<Gdiplus::Bitmap> source(Gdiplus::Bitmap::FromHICON(icon));
+    if (!source || source->GetLastStatus() != Gdiplus::Ok) {
+        return nullptr;
+    }
+
+    const UINT width = source->GetWidth();
+    const UINT height = source->GetHeight();
+    if (width == 0 || height == 0) {
+        return source;
+    }
+
+    auto bitmap = std::make_unique<Gdiplus::Bitmap>(width, height, PixelFormat32bppARGB);
+    if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
+        return source;
+    }
+
+    Gdiplus::Graphics graphics(bitmap.get());
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    graphics.Clear(Gdiplus::Color(0, 0, 0, 0));
+    graphics.DrawImage(source.get(), 0, 0, static_cast<INT>(width), static_cast<INT>(height));
+    graphics.Flush();
+
+    Gdiplus::Rect rect(0, 0, static_cast<INT>(width), static_cast<INT>(height));
+    Gdiplus::BitmapData data{};
+    if (bitmap->LockBits(&rect,
+                         Gdiplus::ImageLockModeRead | Gdiplus::ImageLockModeWrite,
+                         PixelFormat32bppARGB,
+                         &data) != Gdiplus::Ok) {
+        return bitmap;
+    }
+
+    auto pixelAt = [&](UINT x, UINT y) -> Gdiplus::ARGB& {
+        auto* row = reinterpret_cast<Gdiplus::ARGB*>(
+            static_cast<BYTE*>(data.Scan0) + static_cast<ptrdiff_t>(y) * data.Stride);
+        return row[x];
+    };
+
+    int blackCorners = 0;
+    blackCorners += IsOpaqueBlack(pixelAt(0, 0)) ? 1 : 0;
+    blackCorners += IsOpaqueBlack(pixelAt(width - 1, 0)) ? 1 : 0;
+    blackCorners += IsOpaqueBlack(pixelAt(0, height - 1)) ? 1 : 0;
+    blackCorners += IsOpaqueBlack(pixelAt(width - 1, height - 1)) ? 1 : 0;
+
+    if (blackCorners >= 3) {
+        const size_t pixelCount = static_cast<size_t>(width) * height;
+        std::vector<BYTE> visited(pixelCount);
+        std::vector<size_t> pending;
+        pending.reserve(width * 2 + height * 2);
+
+        auto enqueue = [&](UINT x, UINT y) {
+            const size_t index = static_cast<size_t>(y) * width + x;
+            if (!visited[index] && IsOpaqueBlack(pixelAt(x, y))) {
+                visited[index] = 1;
+                pending.push_back(index);
+            }
+        };
+        for (UINT x = 0; x < width; ++x) {
+            enqueue(x, 0);
+            enqueue(x, height - 1);
+        }
+        for (UINT y = 0; y < height; ++y) {
+            enqueue(0, y);
+            enqueue(width - 1, y);
+        }
+
+        for (size_t cursor = 0; cursor < pending.size(); ++cursor) {
+            const size_t index = pending[cursor];
+            const UINT x = static_cast<UINT>(index % width);
+            const UINT y = static_cast<UINT>(index / width);
+            pixelAt(x, y) = 0;
+            if (x > 0) enqueue(x - 1, y);
+            if (x + 1 < width) enqueue(x + 1, y);
+            if (y > 0) enqueue(x, y - 1);
+            if (y + 1 < height) enqueue(x, y + 1);
+        }
+    }
+
+    bitmap->UnlockBits(&data);
+    return bitmap;
+}
+
 } // namespace
 
 // Parse image file headers (PNG / JPEG / BMP) to get pixel dimensions
@@ -172,7 +262,7 @@ bool SaveHIconAsPng(HICON icon, const std::wstring& path) {
     if (!icon) {
         return false;
     }
-    std::unique_ptr<Gdiplus::Bitmap> bitmap(Gdiplus::Bitmap::FromHICON(icon));
+    std::unique_ptr<Gdiplus::Bitmap> bitmap = NormalizeHIconTransparency(icon);
     if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok) {
         return false;
     }
@@ -326,8 +416,7 @@ HBITMAP CreatePreviewBitmap(const DesktopObject& object, int size) {
     // DrawIcon handles alpha/mask correctly — no white background
     // Note: GDI+ Graphics::DrawIcon only takes (x,y), so we convert
     // HICON to Bitmap first, then DrawImage for scaled rendering.
-    std::unique_ptr<Gdiplus::Bitmap> iconBmp(
-        Gdiplus::Bitmap::FromHICON(hIcon));
+    std::unique_ptr<Gdiplus::Bitmap> iconBmp = NormalizeHIconTransparency(hIcon);
     DestroyIcon(hIcon);
     if (!iconBmp || iconBmp->GetLastStatus() != Gdiplus::Ok) {
         delete outBitmap;
@@ -514,6 +603,29 @@ bool BitmapHasAlpha(Gdiplus::Bitmap* bitmap) {
     }
     const Gdiplus::PixelFormat format = bitmap->GetPixelFormat();
     return (format & PixelFormatAlpha) != 0 || (format & PixelFormatPAlpha) != 0;
+}
+
+bool BitmapHasOpaqueBlackBorder(Gdiplus::Bitmap* bitmap) {
+    if (!bitmap || bitmap->GetWidth() == 0 || bitmap->GetHeight() == 0) {
+        return false;
+    }
+    const UINT width = bitmap->GetWidth();
+    const UINT height = bitmap->GetHeight();
+    Gdiplus::Color color;
+    int blackCorners = 0;
+    const Gdiplus::Point corners[] = {
+        {0, 0},
+        {static_cast<INT>(width - 1), 0},
+        {0, static_cast<INT>(height - 1)},
+        {static_cast<INT>(width - 1), static_cast<INT>(height - 1)}
+    };
+    for (const auto& corner : corners) {
+        if (bitmap->GetPixel(corner.X, corner.Y, &color) == Gdiplus::Ok &&
+            IsOpaqueBlack(color.GetValue())) {
+            ++blackCorners;
+        }
+    }
+    return blackCorners >= 3;
 }
 
 Gdiplus::RectF CalculateContainRect(Gdiplus::Image* image,

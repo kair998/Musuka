@@ -17,4 +17,18 @@ if not exist "%QT_PREFIX_PATH%\lib\cmake\Qt6\Qt6Config.cmake" (
 )
 
 set "USE_QT=1"
+set "BUILD_DIR=build-nmake-qt"
 call build.bat
+if errorlevel 1 exit /b 1
+
+if not exist "%QT_PREFIX_PATH%\bin\windeployqt.exe" (
+    echo windeployqt.exe was not found at:
+    echo   %QT_PREFIX_PATH%\bin\windeployqt.exe
+    exit /b 1
+)
+
+"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations "%BUILD_DIR%\musuka.exe"
+if errorlevel 1 exit /b 1
+
+echo.
+echo Qt runtime deployed. Run: %BUILD_DIR%\musuka.exe

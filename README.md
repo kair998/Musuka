@@ -249,3 +249,15 @@ release\musuka.exe
 
 ## 欢迎打赏
 <img width="996" height="996" alt="58b38e0ed8e17a3e3f84c9d4dc59ce2d" src="https://github.com/user-attachments/assets/a90fb9b8-dfd1-43af-be88-2a9c98d40f84" />
+
+## 第三方素材声明
+
+`default_image\` 中以 `touhou_` 开头的图片来自 Ryogo / りょうご制作的
+[东方 Project SD 素材集](http://p-lux.net/material_tohosd.php)，角色原作为
+Team Shanghai Alice 的东方 Project。
+
+这些图片是非官方二次创作素材，不属于 Musuka 的源代码许可证。使用、修改或
+再分发时，需要分别遵守素材作者的使用条件与
+[东方 Project 二次创作指南](https://touhou-project.news/guideline/)。
+详细文件清单与署名信息见
+[`default_image/THIRD_PARTY_ASSETS.md`](default_image/THIRD_PARTY_ASSETS.md)。
