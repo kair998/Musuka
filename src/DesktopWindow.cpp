@@ -32,6 +32,14 @@ constexpr int kDesktopMargin = 24;
 constexpr int kNativeAutoArrangeGap = 4;
 constexpr int kReplacementAutoArrangeGap = 16;
 constexpr int kAutoArrangeScanStep = 16;
+constexpr UINT_PTR kWallpaperEngineRefreshTimer = 1;
+constexpr UINT kWallpaperEngineRefreshIntervalMs = 1000;
+constexpr BYTE kWallpaperEngineTransparencyRed = 1;
+constexpr BYTE kWallpaperEngineTransparencyGreen = 2;
+constexpr BYTE kWallpaperEngineTransparencyBlue = 3;
+constexpr COLORREF kWallpaperEngineTransparencyKey = RGB(kWallpaperEngineTransparencyRed,
+                                                         kWallpaperEngineTransparencyGreen,
+                                                         kWallpaperEngineTransparencyBlue);
 
 bool ShellExecuteChecked(HWND owner,
                          const wchar_t* operation,
@@ -204,7 +212,9 @@ bool TryFindPlacement(const DesktopObject& object,
 DesktopWindow::DesktopWindow(App* app) : app_(app) {}
 
 DesktopWindow::~DesktopWindow() {
+    RestoreDesktopIcons();
     if (hwnd_) {
+        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
         SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -214,8 +224,12 @@ DesktopWindow::~DesktopWindow() {
 bool DesktopWindow::Create() {
     RegisterWindowClass();
 
+    wallpaperEngineMode_ = app_->Config().desktopMode == DesktopMode::WallpaperEngine;
+    HWND requestedDesktopHost = wallpaperEngineMode_ ? FindDesktopHostWindow() : nullptr;
     const RECT bounds = PreferredDesktopBounds();
-    hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    const DWORD extendedStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                                (wallpaperEngineMode_ ? WS_EX_LAYERED : 0);
+    hwnd_ = CreateWindowExW(extendedStyle,
                             L"MusukaDesktopWindow",
                             L"musuka desktop",
                             WS_POPUP,
@@ -230,6 +244,9 @@ bool DesktopWindow::Create() {
     if (!hwnd_) {
         return false;
     }
+    if (wallpaperEngineMode_ && requestedDesktopHost) {
+        AttachToDesktopHost(requestedDesktopHost);
+    }
     SendMessageW(hwnd_,
                  WM_SETICON,
                  ICON_BIG,
@@ -242,6 +259,14 @@ bool DesktopWindow::Create() {
                  reinterpret_cast<LPARAM>(LoadMusukaIcon(app_->Instance(),
                                                           GetSystemMetrics(SM_CXSMICON),
                                                           GetSystemMetrics(SM_CYSMICON))));
+    if (wallpaperEngineMode_) {
+        SetLayeredWindowAttributes(hwnd_, kWallpaperEngineTransparencyKey, 255, LWA_COLORKEY);
+        RefreshWallpaperEngineIntegration();
+        SetTimer(hwnd_,
+                 kWallpaperEngineRefreshTimer,
+                 kWallpaperEngineRefreshIntervalMs,
+                 nullptr);
+    }
 
     LoadAssets();
     RecalculateRects();
@@ -253,7 +278,9 @@ bool DesktopWindow::Create() {
 }
 
 void DesktopWindow::Hide() {
+    RestoreDesktopIcons();
     if (hwnd_) {
+        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
         ShowWindow(hwnd_, SW_HIDE);
     }
 }
@@ -281,13 +308,78 @@ void DesktopWindow::PositionDesktopWindow() {
         return;
     }
     const RECT bounds = PreferredDesktopBounds();
+    HWND insertAfter = nullptr;
+    UINT flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
+    if (wallpaperEngineMode_) {
+        insertAfter = desktopHost_ ? HWND_TOP : HWND_BOTTOM;
+    } else {
+        flags |= SWP_NOZORDER;
+    }
     SetWindowPos(hwnd_,
-                 nullptr,
+                 insertAfter,
                  bounds.left,
                  bounds.top,
                  bounds.right - bounds.left,
                  bounds.bottom - bounds.top,
-                 SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                 flags);
+}
+
+bool DesktopWindow::AttachToDesktopHost(HWND host) {
+    if (!hwnd_ || !host) {
+        return false;
+    }
+
+    LONG_PTR style = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+    const LONG_PTR childStyle = (style & ~static_cast<LONG_PTR>(WS_POPUP)) | WS_CHILD;
+    SetWindowLongPtrW(hwnd_, GWL_STYLE, childStyle);
+
+    SetLastError(ERROR_SUCCESS);
+    const HWND previousParent = SetParent(hwnd_, host);
+    if (!previousParent && GetLastError() != ERROR_SUCCESS) {
+        SetWindowLongPtrW(hwnd_, GWL_STYLE, style);
+        return false;
+    }
+
+    desktopHost_ = host;
+    return true;
+}
+
+void DesktopWindow::RefreshWallpaperEngineIntegration() {
+    if (!wallpaperEngineMode_) {
+        return;
+    }
+
+    HWND currentHost = FindDesktopHostWindow();
+    if (currentHost && currentHost != desktopHost_) {
+        if (AttachToDesktopHost(currentHost)) {
+            PositionDesktopWindow();
+        }
+    }
+    if (!desktopHost_) {
+        return;
+    }
+
+    HWND iconList = FindDesktopIconListView();
+    if (!iconList) {
+        return;
+    }
+    if (iconList != hiddenDesktopIconList_) {
+        RestoreDesktopIcons();
+        hiddenDesktopIconList_ = iconList;
+        restoreDesktopIconList_ = IsWindowVisible(iconList) != FALSE;
+    }
+    if (IsWindowVisible(iconList)) {
+        ShowWindow(iconList, SW_HIDE);
+    }
+}
+
+void DesktopWindow::RestoreDesktopIcons() {
+    if (restoreDesktopIconList_ && hiddenDesktopIconList_ && IsWindow(hiddenDesktopIconList_)) {
+        ShowWindow(hiddenDesktopIconList_, SW_SHOW);
+        UpdateWindow(hiddenDesktopIconList_);
+    }
+    hiddenDesktopIconList_ = nullptr;
+    restoreDesktopIconList_ = false;
 }
 
 LRESULT CALLBACK DesktopWindow::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -326,6 +418,12 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         RecalculateRects();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
+    case WM_TIMER:
+        if (wParam == kWallpaperEngineRefreshTimer) {
+            RefreshWallpaperEngineIntegration();
+            return 0;
+        }
+        break;
     case WM_LBUTTONDOWN: {
         const int x = GET_X_LPARAM(lParam);
         const int y = GET_Y_LPARAM(lParam);
@@ -488,6 +586,8 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
     case WM_NCDESTROY:
     {
+        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
+        RestoreDesktopIcons();
         HWND oldHwnd = hwnd_;
         hwnd_ = nullptr;
         return DefWindowProcW(oldHwnd, message, wParam, lParam);
@@ -501,7 +601,9 @@ void DesktopWindow::LoadAssets() {
     wallpaper_.reset();
 
     AppConfig& config = app_->Config();
-    if (config.backgroundSource == BackgroundSource::SystemWallpaper && !config.systemWallpaperPath.empty()) {
+    if (!wallpaperEngineMode_ &&
+        config.backgroundSource == BackgroundSource::SystemWallpaper &&
+        !config.systemWallpaperPath.empty()) {
         wallpaper_ = LoadBitmapFromPath(config.systemWallpaperPath);
     }
 
@@ -739,6 +841,13 @@ void DesktopWindow::DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc) 
                                 static_cast<float>(rc.right - rc.left),
                                 static_cast<float>(rc.bottom - rc.top));
     AppConfig& config = app_->Config();
+    if (wallpaperEngineMode_) {
+        graphics.Clear(Gdiplus::Color(255,
+                                      kWallpaperEngineTransparencyRed,
+                                      kWallpaperEngineTransparencyGreen,
+                                      kWallpaperEngineTransparencyBlue));
+        return;
+    }
     if (config.backgroundSource == BackgroundSource::SystemWallpaper && wallpaper_) {
         DrawImageCover(graphics, wallpaper_.get(), bounds);
         return;

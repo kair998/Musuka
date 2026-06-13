@@ -550,7 +550,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     layout->addWidget(titleLabel);
 
     auto* descLabel = new QLabel(
-        QStringLiteral("选择拟桌面的运行方式和背景。当前稳定模式为 Wallpaper。"),
+        QStringLiteral("Wallpaper Engine 动态壁纸兼容模式保留动态壁纸，仅覆盖显示 Musuka 图标。"),
         page);
     descLabel->setProperty("desc", true);
     layout->addWidget(descLabel);
@@ -566,8 +566,8 @@ QWidget* QtSettingsWindow::buildPage3() {
     modeLayout->addWidget(modeTitle);
 
     modeEngineRadio_ = new QRadioButton(
-        QStringLiteral("Wallpaper Engine 模式（暂未实现）"), modeCard);
-    modeWallpaperRadio_ = new QRadioButton(QStringLiteral("Wallpaper 模式（推荐）"), modeCard);
+        QStringLiteral("Wallpaper Engine 动态壁纸兼容模式"), modeCard);
+    modeWallpaperRadio_ = new QRadioButton(QStringLiteral("静态壁纸模式"), modeCard);
 
     auto* modeGroup = new QButtonGroup(page);
     modeGroup->addButton(modeEngineRadio_);
@@ -588,11 +588,12 @@ QWidget* QtSettingsWindow::buildPage3() {
 
     // Background source group
     auto* backgroundCard = new QFrame(page);
+    staticWallpaperOptions_ = backgroundCard;
     backgroundCard->setProperty("card", true);
     auto* backgroundLayout = new QVBoxLayout(backgroundCard);
     backgroundLayout->setContentsMargins(18, 14, 18, 16);
     backgroundLayout->setSpacing(8);
-    auto* bgLabel = new QLabel(QStringLiteral("背景来源"), backgroundCard);
+    auto* bgLabel = new QLabel(QStringLiteral("静态壁纸来源"), backgroundCard);
     bgLabel->setProperty("section", true);
     backgroundLayout->addWidget(bgLabel);
 
@@ -626,6 +627,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     colorPreviewLabel_->setObjectName(QStringLiteral("colorPreviewLabel"));
     colorPreviewLabel_->setFrameShape(QFrame::Box);
     colorPreviewLabel_->setLineWidth(1);
+    colorPreviewLabel_->setFixedSize(36, 36);
 
     colorRow->addWidget(chooseColorButton_);
     colorRow->addWidget(colorPreviewLabel_);
@@ -652,6 +654,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     infoIndentLayout->addWidget(wallpaperInfoLabel_);
     backgroundLayout->addLayout(infoIndentLayout);
     layout->addWidget(backgroundCard);
+    backgroundCard->setVisible(app_->Config().desktopMode == DesktopMode::Wallpaper);
 
     layout->addStretch();
 
@@ -742,17 +745,8 @@ void QtSettingsWindow::onPage2Next() {
 
 void QtSettingsWindow::onRunDesktop() {
     AppConfig& config = app_->Config();
-    if (config.desktopMode == DesktopMode::WallpaperEngine) {
-        QMessageBox::information(this, tr("musuka"),
-            tr("该模式暂未实现，当前版本请使用 Wallpaper 模式。"));
-        config.desktopMode = DesktopMode::Wallpaper;
-        if (modeWallpaperRadio_) {
-            modeWallpaperRadio_->setChecked(true);
-        }
-        return;
-    }
-
-    if (config.backgroundSource == BackgroundSource::SystemWallpaper) {
+    if (config.desktopMode == DesktopMode::Wallpaper &&
+        config.backgroundSource == BackgroundSource::SystemWallpaper) {
         std::wstring wallpaperPath;
         if (!TryGetSystemWallpaperPath(wallpaperPath)) {
             QMessageBox::critical(this, tr("musuka"),
@@ -979,14 +973,11 @@ void QtSettingsWindow::onModeEngineToggled(bool checked) {
     if (!checked) {
         return;
     }
-    QMessageBox::information(this, tr("musuka"),
-        tr("Wallpaper Engine 模式暂未实现，当前版本请使用 Wallpaper 模式。"));
-    app_->Config().desktopMode = DesktopMode::Wallpaper;
-    if (modeWallpaperRadio_) {
-        modeWallpaperRadio_->blockSignals(true);
-        modeWallpaperRadio_->setChecked(true);
-        modeWallpaperRadio_->blockSignals(false);
+    app_->Config().desktopMode = DesktopMode::WallpaperEngine;
+    if (staticWallpaperOptions_) {
+        staticWallpaperOptions_->setVisible(false);
     }
+    saveConfigQuietly();
 }
 
 void QtSettingsWindow::onModeWallpaperToggled(bool checked) {
@@ -994,6 +985,9 @@ void QtSettingsWindow::onModeWallpaperToggled(bool checked) {
         return;
     }
     app_->Config().desktopMode = DesktopMode::Wallpaper;
+    if (staticWallpaperOptions_) {
+        staticWallpaperOptions_->setVisible(true);
+    }
     saveConfigQuietly();
 }
 

@@ -221,6 +221,14 @@ void SettingsWindow::RegisterClasses() {
     preview.lpszClassName = L"MusukaPreviewPane";
     ::RegisterClassW(&preview);
 
+    WNDCLASSW colorPreview{};
+    colorPreview.lpfnWndProc = SettingsWindow::ColorPreviewProc;
+    colorPreview.hInstance = app_->Instance();
+    colorPreview.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    colorPreview.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    colorPreview.lpszClassName = L"MusukaColorPreview";
+    ::RegisterClassW(&colorPreview);
+
     registered = true;
 }
 
@@ -246,6 +254,30 @@ LRESULT CALLBACK SettingsWindow::PreviewProc(HWND hwnd, UINT message, WPARAM wPa
     auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (message == WM_PAINT && self) {
         self->DrawPreview(hwnd);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+LRESULT CALLBACK SettingsWindow::ColorPreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_NCCREATE) {
+        auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    }
+    auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (message == WM_PAINT && self) {
+        PAINTSTRUCT paint{};
+        HDC dc = BeginPaint(hwnd, &paint);
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+        self->DrawColorPreview(dc, rect);
+        EndPaint(hwnd, &paint);
+        return 0;
+    }
+    if (message == WM_PRINTCLIENT && self) {
+        RECT rect{};
+        GetClientRect(hwnd, &rect);
+        self->DrawColorPreview(reinterpret_cast<HDC>(wParam), rect);
         return 0;
     }
     return DefWindowProcW(hwnd, message, wParam, lParam);
@@ -296,12 +328,13 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam
         } else if (id == ID_REPLACE) {
             ReplaceSelectedImage();
         } else if (id == ID_MODE_ENGINE) {
-            ShowInfo(hwnd_, L"Wallpaper Engine 模式暂未实现，当前版本请使用 Wallpaper 模式。");
-            app_->Config().desktopMode = DesktopMode::Wallpaper;
+            app_->Config().desktopMode = DesktopMode::WallpaperEngine;
+            SaveConfigQuietly();
             BuildPage();
         } else if (id == ID_MODE_WALLPAPER) {
             app_->Config().desktopMode = DesktopMode::Wallpaper;
             SaveConfigQuietly();
+            BuildPage();
         } else if (id == ID_BG_SYSTEM) {
             app_->Config().backgroundSource = BackgroundSource::SystemWallpaper;
             SaveConfigQuietly();
@@ -321,14 +354,6 @@ LRESULT SettingsWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam
         break;
     case WM_NOTIFY:
         return HandleNotify(lParam);
-    case WM_DRAWITEM: {
-        auto* item = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
-        if (item && item->CtlID == ID_COLOR_PREVIEW) {
-            DrawColorPreview(item->hDC, item->rcItem);
-            return TRUE;
-        }
-        break;
-    }
     case WM_CLOSE:
         SaveConfigQuietly();
         DestroyWindow(hwnd_);
@@ -702,7 +727,7 @@ void SettingsWindow::BuildPage3() {
     CreateStatic(L"第三步：Desktop 模式选择页面", x, y, 460, 26, SS_LEFT);
     y += 46;
 
-    CreateButton(L"Wallpaper Engine 模式：暂未实现 / 保留选项",
+    CreateButton(L"Wallpaper Engine 动态壁纸兼容模式",
                  ID_MODE_ENGINE,
                  x,
                  y,
@@ -710,7 +735,7 @@ void SettingsWindow::BuildPage3() {
                  28,
                  BS_AUTORADIOBUTTON);
     y += 36;
-    CreateButton(L"Wallpaper 模式",
+    CreateButton(L"静态壁纸模式",
                  ID_MODE_WALLPAPER,
                  x,
                  y,
@@ -720,8 +745,13 @@ void SettingsWindow::BuildPage3() {
     CheckRadioButton(hwnd_, ID_MODE_ENGINE, ID_MODE_WALLPAPER,
                      app_->Config().desktopMode == DesktopMode::WallpaperEngine ? ID_MODE_ENGINE : ID_MODE_WALLPAPER);
 
+    if (app_->Config().desktopMode != DesktopMode::Wallpaper) {
+        BuildNavigation(true, false, true);
+        return;
+    }
+
     y += 52;
-    CreateStatic(L"Wallpaper 模式背景来源", x, y, 320, 24, SS_LEFT);
+    CreateStatic(L"静态壁纸来源", x, y, 320, 24, SS_LEFT);
     y += 34;
     CreateButton(L"使用当前系统静态壁纸",
                  ID_BG_SYSTEM,
@@ -744,17 +774,18 @@ void SettingsWindow::BuildPage3() {
     y += 44;
     CreateButton(L"选择颜色", ID_CHOOSE_COLOR, x + 16, y, 110, 30);
     colorPreview_ = CreateWindowExW(0,
-                                    L"STATIC",
+                                    L"MusukaColorPreview",
                                     L"",
-                                    WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+                                    WS_CHILD | WS_VISIBLE,
                                     x + 140,
                                     y,
-                                    88,
+                                    30,
                                     30,
                                     hwnd_,
                                     ControlId(ID_COLOR_PREVIEW),
                                     app_->Instance(),
-                                    nullptr);
+                                    this);
+    RedrawWindow(colorPreview_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
 
     std::wstring wallpaperPath;
     const bool hasWallpaper = TryGetSystemWallpaperPath(wallpaperPath);
@@ -817,14 +848,8 @@ void SettingsWindow::OnPage2Next() {
 
 void SettingsWindow::OnRunDesktop() {
     AppConfig& config = app_->Config();
-    if (config.desktopMode == DesktopMode::WallpaperEngine) {
-        ShowInfo(hwnd_, L"该模式暂未实现，当前版本请使用 Wallpaper 模式。");
-        config.desktopMode = DesktopMode::Wallpaper;
-        BuildPage();
-        return;
-    }
-
-    if (config.backgroundSource == BackgroundSource::SystemWallpaper) {
+    if (config.desktopMode == DesktopMode::Wallpaper &&
+        config.backgroundSource == BackgroundSource::SystemWallpaper) {
         std::wstring wallpaperPath;
         if (!TryGetSystemWallpaperPath(wallpaperPath)) {
             ShowError(hwnd_, L"读取系统静态壁纸失败，请选择 musuka 纯色背景。");
@@ -1416,9 +1441,11 @@ void SettingsWindow::DrawColorPreview(HDC dc, const RECT& rect) {
     FillRect(dc, &rect, brush);
     DeleteObject(brush);
     HPEN pen = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
-    HGDIOBJ old = SelectObject(dc, pen);
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
     Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
-    SelectObject(dc, old);
+    SelectObject(dc, oldBrush);
+    SelectObject(dc, oldPen);
     DeleteObject(pen);
 }
 

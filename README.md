@@ -35,6 +35,12 @@ build.bat
 - 编译到 `build-nmake\musuka.exe`
 - 将 `default_image\` 复制到 `build-nmake\default_image\`
 
+构建后可运行 Wallpaper Engine 桌面层集成烟测：
+
+```bat
+ctest --test-dir build-nmake --output-on-failure
+```
+
 如果 Build Tools 安装在自定义目录，脚本会优先识别日志中验证过的路径：
 
 ```text
@@ -187,7 +193,7 @@ release\musuka.exe
 3. 点击“下一步”扫描桌面快捷方式、普通文件、普通文件夹，并加入“此电脑”“回收站”两个 Shell 对象。
 4. 在配置页选择对象、导入图片、选择候选图片并点击“替换”。
 5. 用“带入 / 忽略”控制该对象是否进入 `musuka desktop`。
-6. 在模式页选择 `Wallpaper 模式`，并选择当前系统静态壁纸或 musuka 纯色背景。
+6. 在模式页选择 `静态壁纸模式`，或在 Wallpaper Engine 正在运行时选择 `Wallpaper Engine 动态壁纸兼容模式`。
 7. 点击“运行”进入拟桌面。
 
 ## 当前支持
@@ -205,16 +211,17 @@ release\musuka.exe
 - 单击选中、左键框选、拖动保存位置、双击打开。
 - 右键菜单：打开、打开所在位置、以管理员身份运行、返回 settings、退出 musuka。
 - PNG alpha 点击命中：透明区域不会触发点击、拖动、双击。
+- Wallpaper Engine 动态壁纸兼容模式：保留动态壁纸画面，在桌面图标层显示 musuka 替换图标，并暂时隐藏 Windows 原桌面图标。
 - 配置持久化到 `data\config.json`。
 
 ## 当前未实现
 
-- `Wallpaper Engine 模式` 仅作为保留选项显示。选择该模式会提示“该模式暂未实现，当前版本请使用 Wallpaper 模式”，不会执行动态壁纸兼容逻辑。
 - 不支持 Live2D、视频背景、插件系统、网络下载、账号系统、云同步。
 
 ## 注意事项
 
-- 当前版本不会隐藏 Windows 原桌面图标。`musuka desktop` 通过一个全屏拟桌面窗口接管视觉显示；退出或返回 settings 后不会影响真实桌面。
+- `静态壁纸模式` 通过全屏拟桌面窗口接管视觉显示，不修改 Windows 原桌面图标状态。只有选择该模式时，settings 才会显示静态壁纸来源与纯色背景设置。
+- `Wallpaper Engine 动态壁纸兼容模式` 会在运行期间隐藏 Explorer 的原桌面图标列表；正常退出或返回 settings 时会恢复。若 musuka 被强制终止，可重启 Windows Explorer 恢复原桌面图标。
 - 当前版本不会删除、移动或修改用户真实桌面文件。
 - 替换图片在 desktop 阶段会按对象配置尺寸等比绘制：原生图标默认 32 像素，替换图片默认 96 像素，可在 32 到 512 像素之间调整；推荐使用带透明 alpha 通道的 PNG。
 - 如果 `default_image` 目录不存在，程序仍可运行，但会提示默认图片为空。
@@ -229,7 +236,7 @@ release\musuka.exe
 5. 导入一个图片文件夹。
 6. 选择候选图片并点击“替换”。
 7. 将另一个对象设置为“忽略”，确认列表显示忽略状态。
-8. 进入 `Wallpaper 模式`。
+8. 进入 `静态壁纸模式`。
 9. 选择“使用当前系统静态壁纸”，点击运行，确认背景绘制为系统静态壁纸。
 10. 返回 settings，选择“使用 musuka 纯色背景”，选择颜色并运行。
 11. 在拟桌面拖动一个替换图片，退出后再次启动，确认位置保持。
@@ -238,6 +245,7 @@ release\musuka.exe
 14. 关闭后再次打开，确认配置仍然存在。
 15. 删除某张原始导入图片，再次进入 desktop，确认 musuka 内部备份图片仍可使用。
 16. 确认 `data\icons\<desktop-object-id>\` 中没有 `default_...` 内置图副本，默认候选图只来自共享的 `default_image\`。
+17. 启用 Wallpaper Engine 动态壁纸后进入 `Wallpaper Engine 动态壁纸兼容模式`，确认动态壁纸保持播放、替换图标可见、Windows 原桌面图标隐藏；返回 settings 后确认原桌面图标恢复。
 
 ## 欢迎打赏
 <img width="996" height="996" alt="58b38e0ed8e17a3e3f84c9d4dc59ce2d" src="https://github.com/user-attachments/assets/a90fb9b8-dfd1-43af-be88-2a9c98d40f84" />

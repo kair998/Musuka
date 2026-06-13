@@ -26,8 +26,10 @@ if exist "build-nmake\CMakeCache.txt" (
     if not errorlevel 1 set "USE_QT_DEPLOY=1"
 )
 
-if "%USE_QT_DEPLOY%"=="1" call :DeployQt
-if errorlevel 1 exit /b 1
+if "%USE_QT_DEPLOY%"=="1" (
+    call :DeployQt
+    if errorlevel 1 exit /b 1
+)
 if "%USE_QT_DEPLOY%"=="0" echo [package] Native Win32 build (no Qt deployment needed).
 
 echo.

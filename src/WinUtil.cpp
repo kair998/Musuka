@@ -9,6 +9,35 @@ namespace musuka {
 
 namespace {
 
+struct DesktopWindowHandles {
+    HWND host = nullptr;
+    HWND iconList = nullptr;
+};
+
+BOOL CALLBACK FindDesktopWindowsCallback(HWND topLevel, LPARAM parameter) {
+    auto* handles = reinterpret_cast<DesktopWindowHandles*>(parameter);
+    HWND shellView = FindWindowExW(topLevel, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (!shellView) {
+        return TRUE;
+    }
+
+    handles->host = topLevel;
+    handles->iconList = FindWindowExW(shellView, nullptr, L"SysListView32", L"FolderView");
+    if (!handles->iconList) {
+        handles->iconList = FindWindowExW(shellView, nullptr, L"SysListView32", nullptr);
+    }
+    return FALSE;
+}
+
+DesktopWindowHandles FindDesktopWindows() {
+    DesktopWindowHandles handles;
+    EnumWindows(FindDesktopWindowsCallback, reinterpret_cast<LPARAM>(&handles));
+    if (!handles.host) {
+        handles.host = FindWindowW(L"Progman", nullptr);
+    }
+    return handles;
+}
+
 HFONT LargerUiFont() {
     static HFONT font = []() -> HFONT {
         LOGFONTW logFont{};
@@ -126,6 +155,14 @@ bool TryGetSystemWallpaperPath(std::wstring& outPath) {
     }
     outPath = buffer;
     return !outPath.empty() && FileExists(outPath);
+}
+
+HWND FindDesktopHostWindow() {
+    return FindDesktopWindows().host;
+}
+
+HWND FindDesktopIconListView() {
+    return FindDesktopWindows().iconList;
 }
 
 bool ChooseSolidColor(HWND owner, COLORREF initial, COLORREF& outColor) {

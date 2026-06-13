@@ -45,6 +45,9 @@ private:
 
     void RegisterWindowClass();
     void PositionDesktopWindow();
+    bool AttachToDesktopHost(HWND host);
+    void RefreshWallpaperEngineIntegration();
+    void RestoreDesktopIcons();
     void LoadAssets();
     void AutoArrangeMissingPositions();
     void RecalculateRects();
@@ -72,6 +75,10 @@ private:
 
     App* app_ = nullptr;
     HWND hwnd_ = nullptr;
+    HWND desktopHost_ = nullptr;
+    HWND hiddenDesktopIconList_ = nullptr;
+    bool restoreDesktopIconList_ = false;
+    bool wallpaperEngineMode_ = false;
     std::vector<RenderItem> items_;
     std::unique_ptr<Gdiplus::Bitmap> wallpaper_;
     int selectedObjectIndex_ = -1;

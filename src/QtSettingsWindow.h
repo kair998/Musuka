@@ -117,6 +117,7 @@ private:
     // Page 3 widgets
     QRadioButton* modeEngineRadio_ = nullptr;
     QRadioButton* modeWallpaperRadio_ = nullptr;
+    QWidget* staticWallpaperOptions_ = nullptr;
     QRadioButton* bgSystemRadio_ = nullptr;
     QRadioButton* bgSolidRadio_ = nullptr;
     QPushButton* chooseColorButton_ = nullptr;

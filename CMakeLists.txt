@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(musuka LANGUAGES CXX)
 
+include(CTest)
+
 if(NOT MSVC)
     message(FATAL_ERROR "musuka currently supports the verified MSVC + NMake build only. Run build.bat from a Windows environment with Visual Studio Build Tools.")
 endif()
@@ -75,4 +77,42 @@ if(MUSUKA_USE_QT)
     message(STATUS "musuka: Qt 6 UI support ENABLED")
 else()
     message(STATUS "musuka: building without Qt (native Win32 UI only)")
+endif()
+
+if(BUILD_TESTING)
+    add_executable(wallpaper_engine_smoke
+        tests/WallpaperEngineSmoke.cpp
+        src/App.cpp
+        src/ConfigStore.cpp
+        src/DesktopScanner.cpp
+        src/DesktopWindow.cpp
+        src/ImageUtil.cpp
+        src/Json.cpp
+        src/SettingsWindow.cpp
+        src/Util.cpp
+        src/WinUtil.cpp
+        src/Musuka.rc
+    )
+    target_compile_definitions(wallpaper_engine_smoke PRIVATE
+        UNICODE
+        _UNICODE
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+    if(MSVC)
+        target_compile_options(wallpaper_engine_smoke PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    target_include_directories(wallpaper_engine_smoke PRIVATE src)
+    target_link_libraries(wallpaper_engine_smoke PRIVATE
+        gdiplus
+        comctl32
+        comdlg32
+        shell32
+        ole32
+        uuid
+        shlwapi
+        user32
+        gdi32
+    )
+    add_test(NAME wallpaper_engine_smoke COMMAND wallpaper_engine_smoke)
 endif()

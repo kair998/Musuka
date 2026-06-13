@@ -24,6 +24,7 @@ public:
 private:
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK ColorPreviewProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleNotify(LPARAM lParam);
