@@ -22,10 +22,15 @@ public:
     bool Create();
     void Hide();
 
+#ifdef MUSUKA_TESTING
+    size_t RenderItemCountForTesting() const;
+    size_t UniqueBitmapCountForTesting() const;
+#endif
+
 private:
     struct RenderItem {
         int objectIndex = -1;
-        std::unique_ptr<Gdiplus::Bitmap> bitmap;
+        std::shared_ptr<Gdiplus::Bitmap> bitmap;
         Gdiplus::RectF rect;
         Gdiplus::RectF bounds;
         Gdiplus::RectF labelRect;
@@ -46,7 +51,7 @@ private:
     void RegisterWindowClass();
     void PositionDesktopWindow();
     bool AttachToDesktopHost(HWND host);
-    void RefreshWallpaperEngineIntegration();
+    void RefreshDesktopCompatibilityIntegration();
     void RestoreDesktopIcons();
     void LoadAssets();
     void AutoArrangeMissingPositions();
@@ -64,6 +69,7 @@ private:
     void ClearSelection();
     void SelectObjectsInBox();
     RECT CurrentSelectionBoxRect() const;
+    void InvalidateSelectionChanges(const std::vector<int>& previousSelection);
     void InvalidateRenderItem(const RenderItem& item);
     void InvalidateRenderRect(const Gdiplus::RectF& rect);
     void ScaleSelectedObjects(int delta);
@@ -78,8 +84,9 @@ private:
     HWND desktopHost_ = nullptr;
     HWND hiddenDesktopIconList_ = nullptr;
     bool restoreDesktopIconList_ = false;
-    bool wallpaperEngineMode_ = false;
+    bool compatibilityMode_ = false;
     std::vector<RenderItem> items_;
+    std::vector<int> renderIndexByObjectIndex_;
     std::unique_ptr<Gdiplus::Bitmap> wallpaper_;
     int selectedObjectIndex_ = -1;
     std::vector<int> selectedObjectIndices_;

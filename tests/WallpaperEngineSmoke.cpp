@@ -2,10 +2,12 @@
 #include "DesktopWindow.h"
 #include "ImageUtil.h"
 #include "QtSettingsWindow.h"
+#include "SettingsLocalization.h"
 #include "Util.h"
 #include "WinUtil.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QLabel>
 #include <QRadioButton>
 
@@ -15,6 +17,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cwchar>
 #include <memory>
 #include <utility>
 
@@ -69,24 +72,39 @@ int FailWithLastError(const char* message) {
 }
 
 int ValidateSettingsModePage(musuka::App& app) {
-    app.Config().desktopMode = musuka::DesktopMode::Wallpaper;
+    app.Config().settingsLanguage = musuka::SettingsLanguage::ChineseSimplified;
+    app.Config().desktopMode = musuka::DesktopMode::StaticWallpaperVirtualDesktop;
     app.Config().backgroundSource = musuka::BackgroundSource::SolidColor;
     app.Config().solidColor = RGB(12, 34, 56);
 
     musuka::QtSettingsWindow settings(&app);
-    settings.showPage(2);
+    app.AttachSettings(&settings);
+    app.ShowSettings(2);
     QApplication::processEvents();
 
     auto* engineMode = settings.findChild<QRadioButton*>(QStringLiteral("wallpaperEngineModeRadio"));
-    auto* staticMode = settings.findChild<QRadioButton*>(QStringLiteral("staticWallpaperModeRadio"));
+    auto* desktopStaticCompatibilityMode = settings.findChild<QRadioButton*>(
+        QStringLiteral("desktopStaticWallpaperCompatibilityModeRadio"));
+    auto* staticVirtualDesktopMode = settings.findChild<QRadioButton*>(
+        QStringLiteral("staticWallpaperVirtualDesktopModeRadio"));
+    auto* compatibilityOptions = settings.findChild<QWidget*>(
+        QStringLiteral("compatibilityModeOptions"));
     auto* staticOptions = settings.findChild<QWidget*>(QStringLiteral("staticWallpaperOptions"));
     auto* preview = settings.findChild<QLabel*>(QStringLiteral("colorPreviewLabel"));
-    if (!engineMode || !staticMode || !staticOptions || !preview) {
-        return Fail("Qt static wallpaper mode controls were not created");
+    auto* languageCombo = settings.findChild<QComboBox*>(QStringLiteral("settingsLanguageCombo"));
+    if (!engineMode || !desktopStaticCompatibilityMode || !staticVirtualDesktopMode ||
+        !compatibilityOptions || !staticOptions || !preview || !languageCombo) {
+        return Fail("Qt desktop mode controls were not created");
     }
     if (engineMode->text() != QStringLiteral("Wallpaper Engine 动态壁纸兼容模式") ||
-        staticMode->text() != QStringLiteral("静态壁纸模式")) {
+        desktopStaticCompatibilityMode->text() != QStringLiteral("桌面静态壁纸兼容模式") ||
+        staticVirtualDesktopMode->text() != QStringLiteral("静态壁纸拟桌面模式")) {
         return Fail("Qt settings mode names are incorrect");
+    }
+    if (!compatibilityOptions->isAncestorOf(engineMode) ||
+        !compatibilityOptions->isAncestorOf(desktopStaticCompatibilityMode) ||
+        compatibilityOptions->isAncestorOf(staticVirtualDesktopMode)) {
+        return Fail("Qt compatibility modes are not grouped correctly");
     }
 
     if (preview->width() != preview->height()) {
@@ -96,19 +114,170 @@ int ValidateSettingsModePage(musuka::App& app) {
         return Fail("Qt solid color preview does not show the configured color");
     }
 
-    engineMode->click();
+    desktopStaticCompatibilityMode->click();
     QApplication::processEvents();
-    if (staticOptions->isVisible()) {
-        return Fail("Qt static wallpaper options remain visible in dynamic wallpaper mode");
+    if (staticOptions->isVisible() ||
+        app.Config().desktopMode != musuka::DesktopMode::DesktopStaticWallpaperCompatibility) {
+        return Fail("Qt desktop static wallpaper compatibility mode was not applied");
     }
 
-    staticMode->click();
+    engineMode->click();
     QApplication::processEvents();
-    if (!staticOptions->isVisible()) {
-        return Fail("Qt static wallpaper options were not restored");
+    if (staticOptions->isVisible() ||
+        app.Config().desktopMode != musuka::DesktopMode::WallpaperEngineCompatibility) {
+        return Fail("Qt Wallpaper Engine compatibility mode was not applied");
+    }
+
+    staticVirtualDesktopMode->click();
+    QApplication::processEvents();
+    if (!staticOptions->isVisible() ||
+        app.Config().desktopMode != musuka::DesktopMode::StaticWallpaperVirtualDesktop) {
+        return Fail("Qt static wallpaper virtual desktop mode was not applied");
+    }
+
+    languageCombo->setCurrentIndex(languageCombo->findData(
+        static_cast<int>(musuka::SettingsLanguage::English)));
+    QApplication::processEvents();
+    languageCombo = settings.findChild<QComboBox*>(QStringLiteral("settingsLanguageCombo"));
+    engineMode = settings.findChild<QRadioButton*>(QStringLiteral("wallpaperEngineModeRadio"));
+    auto* page3Title = settings.findChild<QLabel*>(QStringLiteral("page3TitleLabel"));
+    if (!languageCombo || !engineMode || !page3Title ||
+        app.Config().settingsLanguage != musuka::SettingsLanguage::English ||
+        engineMode->text() != QStringLiteral("Wallpaper Engine dynamic wallpaper compatibility mode") ||
+        page3Title->text() != QStringLiteral("Step 3: Select desktop mode")) {
+        return Fail("Qt Settings did not switch to English");
+    }
+
+    languageCombo->setCurrentIndex(languageCombo->findData(
+        static_cast<int>(musuka::SettingsLanguage::Japanese)));
+    QApplication::processEvents();
+    languageCombo = settings.findChild<QComboBox*>(QStringLiteral("settingsLanguageCombo"));
+    engineMode = settings.findChild<QRadioButton*>(QStringLiteral("wallpaperEngineModeRadio"));
+    page3Title = settings.findChild<QLabel*>(QStringLiteral("page3TitleLabel"));
+    if (!languageCombo || !engineMode || !page3Title ||
+        app.Config().settingsLanguage != musuka::SettingsLanguage::Japanese ||
+        engineMode->text() != QString::fromUtf8("Wallpaper Engine 動く壁紙互換モード") ||
+        page3Title->text() != QString::fromUtf8("ステップ3：デスクトップモードを選択")) {
+        return Fail("Qt Settings did not switch to Japanese");
+    }
+
+    languageCombo->setCurrentIndex(languageCombo->findData(
+        static_cast<int>(musuka::SettingsLanguage::ChineseSimplified)));
+    QApplication::processEvents();
+    if (app.Config().settingsLanguage != musuka::SettingsLanguage::ChineseSimplified) {
+        return Fail("Qt Settings did not switch back to Chinese");
+    }
+    musuka::AppConfig persistedConfig;
+    std::wstring warning;
+    if (!app.Store().Load(persistedConfig, warning) ||
+        persistedConfig.settingsLanguage != musuka::SettingsLanguage::ChineseSimplified) {
+        return Fail("Qt Settings language selection was not persisted");
     }
     settings.hide();
+    app.AttachSettings(nullptr);
     return 0;
+}
+
+int ValidateDesktopModeSerialization() {
+    using musuka::DesktopMode;
+
+    if (std::wcscmp(musuka::ToString(DesktopMode::StaticWallpaperVirtualDesktop),
+                    L"static_wallpaper_virtual_desktop") != 0 ||
+        std::wcscmp(musuka::ToString(DesktopMode::DesktopStaticWallpaperCompatibility),
+                    L"desktop_static_wallpaper_compatibility") != 0 ||
+        std::wcscmp(musuka::ToString(DesktopMode::WallpaperEngineCompatibility),
+                    L"wallpaper_engine_compatibility") != 0) {
+        return Fail("Desktop modes do not serialize to the expected values");
+    }
+    if (musuka::DesktopModeFromString(L"static_wallpaper_virtual_desktop") !=
+            DesktopMode::StaticWallpaperVirtualDesktop ||
+        musuka::DesktopModeFromString(L"desktop_static_wallpaper_compatibility") !=
+            DesktopMode::DesktopStaticWallpaperCompatibility ||
+        musuka::DesktopModeFromString(L"wallpaper_engine_compatibility") !=
+            DesktopMode::WallpaperEngineCompatibility ||
+        musuka::DesktopModeFromString(L"wallpaper") !=
+            DesktopMode::StaticWallpaperVirtualDesktop ||
+        musuka::DesktopModeFromString(L"wallpaper_engine") !=
+            DesktopMode::WallpaperEngineCompatibility) {
+        return Fail("Desktop modes do not deserialize or migrate correctly");
+    }
+    return 0;
+}
+
+int ValidateSettingsLanguageSerialization() {
+    using musuka::SettingsLanguage;
+
+    if (std::wcscmp(musuka::ToString(SettingsLanguage::ChineseSimplified), L"zh_CN") != 0 ||
+        std::wcscmp(musuka::ToString(SettingsLanguage::English), L"en") != 0 ||
+        std::wcscmp(musuka::ToString(SettingsLanguage::Japanese), L"ja") != 0 ||
+        musuka::SettingsLanguageFromString(L"zh_CN") != SettingsLanguage::ChineseSimplified ||
+        musuka::SettingsLanguageFromString(L"en") != SettingsLanguage::English ||
+        musuka::SettingsLanguageFromString(L"ja") != SettingsLanguage::Japanese ||
+        musuka::SettingsLanguageFromString(L"unknown") != SettingsLanguage::ChineseSimplified) {
+        return Fail("Settings languages do not serialize or deserialize correctly");
+    }
+    if (musuka::SettingsString(SettingsLanguage::English, musuka::SettingsStringId::Next) !=
+            QStringLiteral("Next") ||
+        musuka::SettingsString(SettingsLanguage::Japanese, musuka::SettingsStringId::Next) !=
+            QString::fromUtf8("次へ") ||
+        musuka::LocalizeSettingsMessage(SettingsLanguage::English, L"图片复制失败。") !=
+            QStringLiteral("Could not copy the image.") ||
+        musuka::LocalizeSettingsMessage(SettingsLanguage::Japanese, L"图片复制失败。") !=
+            QString::fromUtf8("画像をコピーできませんでした。")) {
+        return Fail("Settings language strings or localized messages are incorrect");
+    }
+    return 0;
+}
+
+int ValidateCompatibilityDesktopMode(musuka::App& app,
+                                     HWND host,
+                                     HWND iconList,
+                                     musuka::DesktopMode mode) {
+    app.Config().desktopMode = mode;
+    ShowWindow(iconList, SW_SHOW);
+
+    int result = 0;
+    musuka::DesktopWindow desktop(&app);
+    if (!desktop.Create()) {
+        return FailWithLastError("Compatibility desktop window creation failed");
+    }
+
+    HWND musukaWindow = FindWindowExW(host, nullptr, L"MusukaDesktopWindow", nullptr);
+    COLORREF colorKey = 0;
+    BYTE alpha = 0;
+    DWORD layeredFlags = 0;
+    if (!musukaWindow || GetParent(musukaWindow) != host) {
+        result = Fail("Musuka desktop was not attached to the desktop icon host");
+    } else if ((GetWindowLongPtrW(musukaWindow, GWL_EXSTYLE) & WS_EX_LAYERED) == 0) {
+        result = Fail("Compatibility desktop window is not layered");
+    } else if (!GetLayeredWindowAttributes(musukaWindow, &colorKey, &alpha, &layeredFlags) ||
+               colorKey != kTransparencyKey ||
+               (layeredFlags & LWA_COLORKEY) == 0) {
+        result = Fail("Compatibility desktop transparency key was not applied");
+    } else if (IsWindowVisible(iconList)) {
+        result = Fail("Explorer desktop icons were not hidden");
+    } else if (!RenderedIconPixelExists(musukaWindow)) {
+        result = Fail("Replacement icon was not rendered");
+    } else if (desktop.RenderItemCountForTesting() != app.Config().objects.size()) {
+        result = Fail("Desktop did not create one render item per configured object");
+    } else if (desktop.UniqueBitmapCountForTesting() != 1) {
+        result = Fail("Desktop did not reuse the shared replacement bitmap");
+    }
+
+    if (result == 0) {
+        for (const auto& configuredObject : app.Config().objects) {
+            if (configuredObject.iconSize != musuka::kDesktopIconMaxSize) {
+                result = Fail("Auto-arrange changed a configured icon size");
+                break;
+            }
+        }
+    }
+
+    desktop.Hide();
+    if (result == 0 && !IsWindowVisible(iconList)) {
+        result = Fail("Explorer desktop icons were not restored");
+    }
+    return result;
 }
 
 int ValidateTinyTransparentCanvasTrimming() {
@@ -151,7 +320,7 @@ int main() {
 
     musuka::App app;
     app.Initialize(instance);
-    app.Config().desktopMode = musuka::DesktopMode::WallpaperEngine;
+    app.Config().desktopMode = musuka::DesktopMode::WallpaperEngineCompatibility;
     app.Config().objects.clear();
 
     for (int i = 0; i < 8; ++i) {
@@ -222,57 +391,30 @@ int main() {
     }
 
     int result = ValidateTinyTransparentCanvasTrimming();
-    {
-        if (result == 0 &&
-            (musuka::FindDesktopHostWindow() != host ||
-             musuka::FindDesktopIconListView() != iconList)) {
-            result = Fail("Fake Explorer desktop hierarchy was not discovered");
-        }
-        musuka::DesktopWindow desktop(&app);
-        if (result == 0) {
-            if (!desktop.Create()) {
-                const DWORD createError = GetLastError();
-                WNDCLASSW desktopClass{};
-                const BOOL classExists = GetClassInfoW(instance, L"MusukaDesktopWindow", &desktopClass);
-                std::fprintf(stderr,
-                             "Desktop class registered=%d classError=%lu\n",
-                             classExists,
-                             GetLastError());
-                SetLastError(createError);
-                result = FailWithLastError("Wallpaper Engine desktop window creation failed");
-            } else {
-                HWND musukaWindow = FindWindowExW(host, nullptr, L"MusukaDesktopWindow", nullptr);
-                COLORREF colorKey = 0;
-                BYTE alpha = 0;
-                DWORD layeredFlags = 0;
-                if (!musukaWindow || GetParent(musukaWindow) != host) {
-                    result = Fail("Musuka desktop was not attached to the desktop icon host");
-                } else if ((GetWindowLongPtrW(musukaWindow, GWL_EXSTYLE) & WS_EX_LAYERED) == 0) {
-                    result = Fail("Wallpaper Engine desktop window is not layered");
-                } else if (!GetLayeredWindowAttributes(musukaWindow, &colorKey, &alpha, &layeredFlags) ||
-                           colorKey != kTransparencyKey ||
-                           (layeredFlags & LWA_COLORKEY) == 0) {
-                    result = Fail("Wallpaper Engine transparency key was not applied");
-                } else if (IsWindowVisible(iconList)) {
-                    result = Fail("Explorer desktop icons were not hidden");
-                } else if (!RenderedIconPixelExists(musukaWindow)) {
-                    result = Fail("Replacement icon was not rendered");
-                }
-                if (result == 0) {
-                    for (const auto& configuredObject : app.Config().objects) {
-                        if (configuredObject.iconSize != musuka::kDesktopIconMaxSize) {
-                            result = Fail("Auto-arrange changed a configured icon size");
-                            break;
-                        }
-                    }
-                }
-
-                desktop.Hide();
-                if (result == 0 && !IsWindowVisible(iconList)) {
-                    result = Fail("Explorer desktop icons were not restored");
-                }
-            }
-        }
+    if (result == 0) {
+        result = ValidateDesktopModeSerialization();
+    }
+    if (result == 0) {
+        result = ValidateSettingsLanguageSerialization();
+    }
+    if (result == 0 &&
+        (musuka::FindDesktopHostWindow() != host ||
+         musuka::FindDesktopIconListView() != iconList)) {
+        result = Fail("Fake Explorer desktop hierarchy was not discovered");
+    }
+    if (result == 0) {
+        result = ValidateCompatibilityDesktopMode(
+            app,
+            host,
+            iconList,
+            musuka::DesktopMode::DesktopStaticWallpaperCompatibility);
+    }
+    if (result == 0) {
+        result = ValidateCompatibilityDesktopMode(
+            app,
+            host,
+            iconList,
+            musuka::DesktopMode::WallpaperEngineCompatibility);
     }
 
     if (result == 0) {

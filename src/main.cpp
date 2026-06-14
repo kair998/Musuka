@@ -1,4 +1,5 @@
 #include "App.h"
+#include "QtSettingsWindow.h"
 
 #include <QApplication>
 
@@ -8,12 +9,7 @@
 #include <objbase.h>
 
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
-    SetProcessDPIAware();
-
-    int argc = 1;
-    char appName[] = "musuka";
-    char* argv[] = {appName, nullptr};
-    QApplication qtApplication(argc, argv);
+    QApplication qtApplication(__argc, __argv);
 
     HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(comResult)) {
@@ -27,10 +23,16 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int) {
         return 1;
     }
 
-    musuka::App app;
-    app.Initialize(hInstance);
-    app.ShowSettings(0);
-    const int result = app.Run();
+    int result = 0;
+    {
+        musuka::App app;
+        app.Initialize(hInstance);
+        musuka::QtSettingsWindow settings(&app);
+        app.AttachSettings(&settings);
+        app.ShowSettings(0);
+        result = app.Run();
+        app.AttachSettings(nullptr);
+    }
 
     Gdiplus::GdiplusShutdown(gdiplusToken);
     CoUninitialize();

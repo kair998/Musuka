@@ -1,15 +1,18 @@
 #pragma once
 
 #include "Models.h"
+#include "SettingsLocalization.h"
 
 #include <QMainWindow>
 #include <QLabel>
 #include <QLineEdit>
+#include <QComboBox>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSlider>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QTimer>
 
 #include <string>
 #include <vector>
@@ -45,13 +48,17 @@ private slots:
     void onReplaceSelected();
     void onIconSizeSliderChanged();
     void onModeEngineToggled(bool checked);
-    void onModeWallpaperToggled(bool checked);
+    void onModeDesktopStaticCompatibilityToggled(bool checked);
+    void onModeStaticVirtualDesktopToggled(bool checked);
     void onBgSystemToggled(bool checked);
     void onBgSolidToggled(bool checked);
     void onChooseColor();
+    void onLanguageChanged(int index);
 
 private:
     void buildUi();
+    void rebuildUi();
+    void resetWidgetPointers();
     QWidget* buildPage1();
     QWidget* buildPage2();
     QWidget* buildPage3();
@@ -68,8 +75,11 @@ private:
     bool resolveCurrentCandidate(const DesktopObject& object, ImageCandidate& outCandidate) const;
     bool addCandidateFromFile(DesktopObject& object, const std::wstring& imagePath, std::wstring& error);
     void saveConfigQuietly();
+    void flushConfigSave();
     void drawPreview();
     void applyStyleSheet();
+    QString text(SettingsStringId id) const;
+    QString localizedMessage(const std::wstring& message) const;
 
     void onObjectSelectedImpl(int objectIndex);
     void updateObjectListItem(int objectIndex);
@@ -91,8 +101,10 @@ private:
     std::wstring searchText_;
     std::vector<int> filteredObjects_;
     std::vector<ImageCandidate> defaultImageCandidates_;
+    QTimer* configSaveTimer_ = nullptr;
 
     QStackedWidget* stackedWidget_ = nullptr;
+    QComboBox* languageCombo_ = nullptr;
 
     // Page 1 widgets
     QLineEdit* pathEdit_ = nullptr;
@@ -114,7 +126,8 @@ private:
 
     // Page 3 widgets
     QRadioButton* modeEngineRadio_ = nullptr;
-    QRadioButton* modeWallpaperRadio_ = nullptr;
+    QRadioButton* modeDesktopStaticCompatibilityRadio_ = nullptr;
+    QRadioButton* modeStaticVirtualDesktopRadio_ = nullptr;
     QWidget* staticWallpaperOptions_ = nullptr;
     QRadioButton* bgSystemRadio_ = nullptr;
     QRadioButton* bgSolidRadio_ = nullptr;

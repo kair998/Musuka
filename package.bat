@@ -28,21 +28,16 @@ if exist default_image (
     if errorlevel 1 exit /b 1
 )
 
-if exist data (
-    xcopy /e /i /y data release\data >nul
-    if errorlevel 2 exit /b 1
-) else (
-    mkdir release\data
-    if errorlevel 1 exit /b 1
-)
+mkdir release\data
+if errorlevel 1 exit /b 1
 
-"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations release\musuka.exe
+"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --skip-plugin-types generic,iconengines,networkinformation,styles,tls --exclude-plugins qgif,qicns,qico,qsvg,qtga,qtiff,qwbmp,qwebp release\musuka.exe
 if errorlevel 1 (
     echo [package] ERROR: windeployqt failed.
     exit /b 1
 )
 
-for %%F in (dxcompiler.dll dxil.dll concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vccorlib140.dll vcruntime140.dll vcruntime140_1.dll vcruntime140_threads.dll) do (
+for %%F in (concrt140.dll msvcp140.dll msvcp140_1.dll msvcp140_2.dll msvcp140_atomic_wait.dll msvcp140_codecvt_ids.dll vccorlib140.dll vcruntime140.dll vcruntime140_1.dll vcruntime140_threads.dll) do (
     if exist "build-nmake\%%F" copy /y "build-nmake\%%F" "release\%%F" >nul
 )
 

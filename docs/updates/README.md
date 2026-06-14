@@ -4,6 +4,8 @@
 
 ## 更新索引
 
+- [2026-06-14：Settings 中英日多语言切换](2026-06-14-settings-localization.md)
+- [2026-06-14：桌面模式分类与静态壁纸兼容模式](2026-06-14-desktop-mode-categories.md)
 - [2026-06-13：当前开发版本更新总结](2026-06-13-current-development-summary.md)
 - [2026-06-13：图标预览、尺寸与框选反馈修复](2026-06-13-icon-preview-size-and-selection.md)
 - [2026-06-13：仅 Qt 构建与可运行发布包](2026-06-13-qt-only-build.md)

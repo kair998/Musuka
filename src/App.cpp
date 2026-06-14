@@ -2,6 +2,7 @@
 
 #include "DesktopWindow.h"
 #include "QtSettingsWindow.h"
+#include "SettingsLocalization.h"
 #include "WinUtil.h"
 
 #include <QApplication>
@@ -28,7 +29,7 @@ bool App::Initialize(HINSTANCE instance) {
     std::wstring warning;
     store_.Load(config_, warning);
     if (!warning.empty()) {
-        ShowInfo(nullptr, warning);
+        ShowInfo(nullptr, LocalizeSettingsMessage(config_.settingsLanguage, warning).toStdWString());
     }
     return true;
 }
@@ -37,14 +38,17 @@ int App::Run() {
     return QApplication::exec();
 }
 
+void App::AttachSettings(QtSettingsWindow* settings) {
+    qtSettings_ = settings;
+}
+
 void App::ShowSettings(int page) {
     if (desktop_) {
         desktop_->Hide();
     }
-    if (!qtSettings_) {
-        qtSettings_ = std::make_unique<QtSettingsWindow>(this);
+    if (qtSettings_) {
+        qtSettings_->showPage(page);
     }
-    qtSettings_->showPage(page);
 }
 
 void App::ShowDesktop() {

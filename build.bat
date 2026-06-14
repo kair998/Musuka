@@ -68,7 +68,17 @@ if exist default_image (
     echo default_image directory does not exist. The program will run without built-in images.
 )
 
-"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations "%BUILD_DIR%\musuka.exe"
+for %%F in (vc_redist.x64.exe opengl32sw.dll d3dcompiler_47.dll dxcompiler.dll dxil.dll Qt6Network.dll Qt6Svg.dll) do (
+    if exist "%BUILD_DIR%\%%F" del /q "%BUILD_DIR%\%%F"
+)
+for %%D in (generic iconengines networkinformation styles tls) do (
+    if exist "%BUILD_DIR%\%%D" rmdir /s /q "%BUILD_DIR%\%%D"
+)
+for %%F in (qgif.dll qicns.dll qico.dll qsvg.dll qtga.dll qtiff.dll qwbmp.dll qwebp.dll) do (
+    if exist "%BUILD_DIR%\imageformats\%%F" del /q "%BUILD_DIR%\imageformats\%%F"
+)
+
+"%QT_PREFIX_PATH%\bin\windeployqt.exe" --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --skip-plugin-types generic,iconengines,networkinformation,styles,tls --exclude-plugins qgif,qicns,qico,qsvg,qtga,qtiff,qwbmp,qwebp "%BUILD_DIR%\musuka.exe"
 if errorlevel 1 exit /b 1
 
 set "VC_RUNTIME_DIR=%VCToolsRedistDir%x64\Microsoft.VC143.CRT"

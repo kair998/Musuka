@@ -5,10 +5,11 @@
 ## 文档
 
 - [技术文档：项目结构、构建、打包与实现细节](docs/TECHNICAL.md)
+- [性能优化报告](docs/PERFORMANCE_OPTIMIZATION.md)
 - [更新记录](docs/updates/README.md)
 - [安全审计](docs/SECURITY_AUDIT.md)
 
-Musuka 是一个 Windows 桌面图标娘化替换软件。当前版本不会修改真实 Windows 桌面文件，也不会修改系统图标；它会创建一个由 Musuka 管理的拟桌面窗口，在背景上绘制替换图片，并通过这些图片打开对应桌面对象。
+Musuka 是一个 Windows 桌面图标娘化替换软件。当前版本不会修改真实 Windows 桌面文件，也不会修改系统图标；它会创建一个由 Musuka 管理的桌面图标层，在拟桌面背景或当前桌面壁纸上绘制替换图片，并通过这些图片打开对应桌面对象。
 
 ## 如何运行
 
@@ -27,7 +28,7 @@ release\musuka.exe
 3. 点击“下一步”扫描桌面快捷方式、普通文件、普通文件夹，并加入“此电脑”“回收站”两个 Shell 对象。
 4. 在配置页选择对象、导入图片、选择候选图片并点击“替换”。
 5. 用“带入 / 忽略”控制该对象是否进入 `musuka desktop`。
-6. 在模式页选择 `静态壁纸模式`，或在 Wallpaper Engine 正在运行时选择 `Wallpaper Engine 动态壁纸兼容模式`。
+6. 在模式页选择 `静态壁纸拟桌面模式`，或从“兼容模式”中选择 `桌面静态壁纸兼容模式`、`Wallpaper Engine 动态壁纸兼容模式`。
 7. 点击“运行”进入拟桌面。
 
 ## 当前支持
@@ -42,7 +43,9 @@ release\musuka.exe
 - 单击选中、左键框选、拖动保存位置、双击打开。
 - 右键菜单：打开、打开所在位置、以管理员身份运行、返回 settings、退出 Musuka。
 - PNG alpha 点击命中：透明区域不会触发点击、拖动或双击。
-- 静态壁纸模式：使用当前系统静态壁纸或 Musuka 纯色背景。
+- Musuka Settings 支持中文、English、日本語即时切换，并记住语言选择。
+- 静态壁纸拟桌面模式：由 Musuka 绘制当前系统静态壁纸或纯色背景。
+- 桌面静态壁纸兼容模式：直接保留 Windows 桌面静态壁纸画面，仅覆盖显示 Musuka 图标。
 - Wallpaper Engine 动态壁纸兼容模式：保留动态壁纸，显示 Musuka 替换图标，并暂时隐藏 Windows 原桌面图标。
 - 配置持久化到 `data\config.json`。
 
@@ -57,8 +60,9 @@ release\musuka.exe
 
 ## 注意事项
 
-- `静态壁纸模式` 通过全屏拟桌面窗口接管视觉显示，不修改 Windows 原桌面图标状态。
-- `Wallpaper Engine 动态壁纸兼容模式` 会在运行期间隐藏 Explorer 原桌面图标列表；正常退出或返回 settings 时会恢复。若 Musuka 被强制终止，可重启 Windows Explorer 恢复原桌面图标。
+- `静态壁纸拟桌面模式` 通过全屏拟桌面窗口接管视觉显示，不修改 Windows 原桌面图标状态。
+- `桌面静态壁纸兼容模式` 和 `Wallpaper Engine 动态壁纸兼容模式` 归入“兼容模式”，都会在运行期间隐藏 Explorer 原桌面图标列表；正常退出或返回 settings 时会恢复。
+- 若 Musuka 在兼容模式下被强制终止，可重启 Windows Explorer 恢复原桌面图标。
 - 当前版本不会删除、移动或修改用户真实桌面文件。
 - 原始图标默认 32 像素，替换图片默认 96 像素，可在 32 到 512 像素之间调整。
 - 推荐使用带透明 alpha 通道的 PNG。

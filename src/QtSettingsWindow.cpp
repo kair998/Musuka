@@ -2,7 +2,7 @@
 #include "App.h"
 #include "DesktopScanner.h"
 #include "ImageUtil.h"
-#include "Resource.h"
+#include "SettingsLocalization.h"
 #include "Util.h"
 #include "WinUtil.h"
 
@@ -19,6 +19,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPixmap>
+#include <QPixmapCache>
 #include <QScreen>
 #include <QScrollBar>
 #include <QSizePolicy>
@@ -39,6 +40,10 @@ namespace {
 constexpr int kPreviewMargin = 8;
 constexpr int kQtThumbnailSize = 112;
 constexpr int kQtThumbnailRenderSize = kQtThumbnailSize * 2;
+constexpr int kConfigSaveDelayMs = 250;
+constexpr uintmax_t kMaxImageFileSize = 10 * 1024 * 1024;
+constexpr int kMaxImageDimension = 8192;
+constexpr qint64 kMaxImagePixels = 16777216;
 
 std::wstring LowerText(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
@@ -62,30 +67,68 @@ bool SameInternalPath(const std::wstring& left, const std::wstring& right) {
            NormalizePathForCompare(ToAbsoluteAppPath(right));
 }
 
-std::wstring ObjectListText(const DesktopObject& object) {
-    std::wstring name = object.name;
+QString ObjectListText(const DesktopObject& object, SettingsLanguage language) {
+    QString name;
+    if (object.type == DesktopObjectType::ThisPC) {
+        name = SettingsString(language, SettingsStringId::ThisPC);
+    } else if (object.type == DesktopObjectType::RecycleBin) {
+        name = SettingsString(language, SettingsStringId::RecycleBin);
+    } else {
+        name = QString::fromWCharArray(object.name.c_str());
+    }
     if (!object.includeInDesktop) {
-        name += L"  [忽略]";
+        name += SettingsString(language, SettingsStringId::IgnoredSuffix);
     }
     return name;
 }
 
 QPixmap LoadValidatedPixmap(const std::wstring& imagePath, const QSize& targetSize) {
     const std::wstring absolutePath = ToAbsoluteAppPath(imagePath);
-    if (!ImageCanBeLoaded(absolutePath)) {
+    if (absolutePath.empty() || !targetSize.isValid() || targetSize.isEmpty()) {
         return QPixmap();
+    }
+
+    std::error_code ec;
+    const fs::path path(absolutePath);
+    const uintmax_t fileSize = fs::file_size(path, ec);
+    if (ec || fileSize > kMaxImageFileSize) {
+        return QPixmap();
+    }
+    const auto lastWriteTime = fs::last_write_time(path, ec);
+    const qint64 lastWriteStamp = ec
+        ? 0
+        : static_cast<qint64>(lastWriteTime.time_since_epoch().count());
+    const QString cacheKey = QStringLiteral("musuka:%1:%2:%3:%4x%5")
+        .arg(QString::fromWCharArray(NormalizePathForCompare(absolutePath).c_str()))
+        .arg(static_cast<qulonglong>(fileSize))
+        .arg(lastWriteStamp)
+        .arg(targetSize.width())
+        .arg(targetSize.height());
+    QPixmap cached;
+    if (QPixmapCache::find(cacheKey, &cached)) {
+        return cached;
     }
 
     QImageReader reader(QString::fromWCharArray(absolutePath.c_str()));
     reader.setAutoTransform(true);
+    if (!reader.canRead()) {
+        return QPixmap();
+    }
+    const QSize sourceSize = reader.size();
+    if (!sourceSize.isValid() ||
+        sourceSize.width() > kMaxImageDimension ||
+        sourceSize.height() > kMaxImageDimension ||
+        static_cast<qint64>(sourceSize.width()) * sourceSize.height() > kMaxImagePixels) {
+        return QPixmap();
+    }
+    reader.setScaledSize(sourceSize.scaled(targetSize, Qt::KeepAspectRatio));
     const QImage image = reader.read();
     if (image.isNull()) {
         return QPixmap();
     }
-    return QPixmap::fromImage(image).scaled(
-        targetSize,
-        Qt::KeepAspectRatio,
-        Qt::SmoothTransformation);
+    const QPixmap pixmap = QPixmap::fromImage(image);
+    QPixmapCache::insert(cacheKey, pixmap);
+    return pixmap;
 }
 
 QPixmap CreateBlankThumbnailPixmap(int size) {
@@ -113,6 +156,10 @@ void AddEmptyListMessage(QListWidget* list, const QString& message) {
 
 QtSettingsWindow::QtSettingsWindow(App* app)
     : app_(app) {
+    configSaveTimer_ = new QTimer(this);
+    configSaveTimer_->setSingleShot(true);
+    connect(configSaveTimer_, &QTimer::timeout, this, &QtSettingsWindow::flushConfigSave);
+
     setWindowTitle(QStringLiteral("musuka settings"));
     setMinimumSize(1040, 680);
     resize(1240, 780);
@@ -130,34 +177,6 @@ QtSettingsWindow::QtSettingsWindow(App* app)
         const QRect windowGeom = geometry();
         move(screenGeom.center().x() - (windowGeom.width() / 2),
              screenGeom.center().y() - (windowGeom.height() / 2));
-    }
-
-    // Set application icon
-    QIcon appIcon;
-    HICON hIconBig = reinterpret_cast<HICON>(LoadImageW(
-        app_->Instance(),
-        MAKEINTRESOURCEW(IDI_MUSUKA),
-        IMAGE_ICON,
-        GetSystemMetrics(SM_CXICON),
-        GetSystemMetrics(SM_CYICON),
-        LR_DEFAULTCOLOR | LR_SHARED));
-    if (hIconBig) {
-        appIcon.addPixmap(QPixmap::fromImage(QImage::fromHICON(hIconBig)));
-        DestroyIcon(hIconBig);
-    }
-    HICON hIconSmall = reinterpret_cast<HICON>(LoadImageW(
-        app_->Instance(),
-        MAKEINTRESOURCEW(IDI_MUSUKA),
-        IMAGE_ICON,
-        GetSystemMetrics(SM_CXSMICON),
-        GetSystemMetrics(SM_CYSMICON),
-        LR_DEFAULTCOLOR | LR_SHARED));
-    if (hIconSmall) {
-        appIcon.addPixmap(QPixmap::fromImage(QImage::fromHICON(hIconSmall)));
-        DestroyIcon(hIconSmall);
-    }
-    if (!appIcon.isNull()) {
-        setWindowIcon(appIcon);
     }
 }
 
@@ -181,7 +200,7 @@ void QtSettingsWindow::hide() {
 }
 
 void QtSettingsWindow::closeEvent(QCloseEvent* event) {
-    saveConfigQuietly();
+    flushConfigSave();
     if (app_) {
         app_->Exit();
     }
@@ -198,6 +217,14 @@ QString QtSettingsWindow::toQString(const std::wstring& value) {
 
 std::wstring QtSettingsWindow::fromString(const QString& value) {
     return value.toStdWString();
+}
+
+QString QtSettingsWindow::text(SettingsStringId id) const {
+    return SettingsString(app_->Config().settingsLanguage, id);
+}
+
+QString QtSettingsWindow::localizedMessage(const std::wstring& message) const {
+    return LocalizeSettingsMessage(app_->Config().settingsLanguage, message);
 }
 
 // ---------------------------------------------------------------------------
@@ -219,13 +246,28 @@ void QtSettingsWindow::buildUi() {
     // Navigation bar at bottom
     auto* navLayout = new QHBoxLayout();
     navLayout->setContentsMargins(18, 6, 18, 10);
+    auto* languageLabel = new QLabel(text(SettingsStringId::Language), centralWidget);
+    languageLabel->setObjectName(QStringLiteral("settingsLanguageLabel"));
+    languageCombo_ = new QComboBox(centralWidget);
+    languageCombo_->setObjectName(QStringLiteral("settingsLanguageCombo"));
+    for (SettingsLanguage language : {SettingsLanguage::ChineseSimplified,
+                                      SettingsLanguage::English,
+                                      SettingsLanguage::Japanese}) {
+        languageCombo_->addItem(SettingsLanguageName(language), static_cast<int>(language));
+    }
+    const int languageIndex = languageCombo_->findData(
+        static_cast<int>(app_->Config().settingsLanguage));
+    languageCombo_->setCurrentIndex(std::max(0, languageIndex));
+
+    navLayout->addWidget(languageLabel);
+    navLayout->addWidget(languageCombo_);
     navLayout->addStretch();
 
-    prevButton_ = new QPushButton(tr("\u4E0A\u4E00\u6B65"), centralWidget);
+    prevButton_ = new QPushButton(text(SettingsStringId::Previous), centralWidget);
     prevButton_->setProperty("nav", true);
-    nextButton_ = new QPushButton(tr("\u4E0B\u4E00\u6B65"), centralWidget);
+    nextButton_ = new QPushButton(text(SettingsStringId::Next), centralWidget);
     nextButton_->setProperty("primary", true);
-    runButton_ = new QPushButton(tr("\u8FD0\u884C"), centralWidget);
+    runButton_ = new QPushButton(text(SettingsStringId::Run), centralWidget);
     runButton_->setProperty("action", "run");
 
     navLayout->addWidget(prevButton_);
@@ -248,9 +290,56 @@ void QtSettingsWindow::buildUi() {
     });
 
     connect(runButton_, &QPushButton::clicked, this, &QtSettingsWindow::onRunDesktop);
+    connect(languageCombo_,
+            qOverload<int>(&QComboBox::currentIndexChanged),
+            this,
+            &QtSettingsWindow::onLanguageChanged);
 
     mainLayout->addLayout(navLayout);
     setCentralWidget(centralWidget);
+}
+
+void QtSettingsWindow::rebuildUi() {
+    const int page = currentPage_;
+    QWidget* oldCentralWidget = takeCentralWidget();
+    resetWidgetPointers();
+    if (oldCentralWidget) {
+        oldCentralWidget->deleteLater();
+    }
+    buildUi();
+    applyStyleSheet();
+    showPage(page);
+}
+
+void QtSettingsWindow::resetWidgetPointers() {
+    stackedWidget_ = nullptr;
+    languageCombo_ = nullptr;
+    pathEdit_ = nullptr;
+    browseButton_ = nullptr;
+    previewLabel_ = nullptr;
+    searchEdit_ = nullptr;
+    objectList_ = nullptr;
+    candidateList_ = nullptr;
+    defaultImageList_ = nullptr;
+    includeButton_ = nullptr;
+    includeAllButton_ = nullptr;
+    replaceButton_ = nullptr;
+    importSingleButton_ = nullptr;
+    importFolderButton_ = nullptr;
+    iconSizeSlider_ = nullptr;
+    iconSizeValueLabel_ = nullptr;
+    modeEngineRadio_ = nullptr;
+    modeDesktopStaticCompatibilityRadio_ = nullptr;
+    modeStaticVirtualDesktopRadio_ = nullptr;
+    staticWallpaperOptions_ = nullptr;
+    bgSystemRadio_ = nullptr;
+    bgSolidRadio_ = nullptr;
+    chooseColorButton_ = nullptr;
+    colorPreviewLabel_ = nullptr;
+    wallpaperInfoLabel_ = nullptr;
+    prevButton_ = nullptr;
+    nextButton_ = nullptr;
+    runButton_ = nullptr;
 }
 
 QWidget* QtSettingsWindow::buildPage1() {
@@ -267,7 +356,8 @@ QWidget* QtSettingsWindow::buildPage1() {
     titleLabel->setFont(titleFont);
     layout->addWidget(titleLabel);
 
-    auto* subtitleLabel = new QLabel(QStringLiteral("\u7B2C\u4E00\u6B65\uFF1A\u9009\u62E9\u684C\u9762\u8DEF\u5F84"), page);
+    auto* subtitleLabel = new QLabel(text(SettingsStringId::Step1Title), page);
+    subtitleLabel->setObjectName(QStringLiteral("page1TitleLabel"));
     subtitleLabel->setProperty("subtitle", true);
     QFont subtitleFont = subtitleLabel->font();
     subtitleFont.setPointSize(subtitleFont.pointSize() + 1);
@@ -275,10 +365,11 @@ QWidget* QtSettingsWindow::buildPage1() {
     layout->addWidget(subtitleLabel);
 
     auto* descLabel = new QLabel(
-        QStringLiteral("\u8BF7\u9009\u62E9\u4E3B\u8981\u684C\u9762\u8DEF\u5F84\u3002musuka \u4F1A\u540C\u65F6\u626B\u63CF\u8BE5\u8DEF\u5F84\u3001\u5F53\u524D\u7528\u6237\u684C\u9762\u3001\u516C\u5171\u684C\u9762\uFF0C\u5E76\u52A0\u5165\u201C\u6B64\u7535\u8111\u201D\u548C\u201C\u56DE\u6536\u7AD9\u201D\u3002"),
+        text(SettingsStringId::Step1Description),
         page);
+    descLabel->setTextFormat(Qt::PlainText);
     descLabel->setProperty("desc", true);
-    descLabel->setWordWrap(true);
+    descLabel->setWordWrap(app_->Config().settingsLanguage != SettingsLanguage::ChineseSimplified);
     layout->addWidget(descLabel);
 
     layout->addSpacing(12);
@@ -288,14 +379,15 @@ QWidget* QtSettingsWindow::buildPage1() {
     auto* pathCardLayout = new QVBoxLayout(pathCard);
     pathCardLayout->setContentsMargins(18, 16, 18, 18);
     pathCardLayout->setSpacing(10);
-    auto* pathTitle = new QLabel(QStringLiteral("桌面扫描位置"), pathCard);
+    auto* pathTitle = new QLabel(text(SettingsStringId::DesktopScanLocation), pathCard);
     pathTitle->setProperty("section", true);
     pathCardLayout->addWidget(pathTitle);
     auto* pathHint = new QLabel(
-        QStringLiteral("选择常用桌面目录。继续后会扫描对象并生成可编辑的替代图片配置。"),
+        text(SettingsStringId::DesktopScanHint),
         pathCard);
+    pathHint->setTextFormat(Qt::PlainText);
     pathHint->setProperty("desc", true);
-    pathHint->setWordWrap(true);
+    pathHint->setWordWrap(app_->Config().settingsLanguage != SettingsLanguage::ChineseSimplified);
     pathCardLayout->addWidget(pathHint);
 
     auto* pathRow = new QHBoxLayout();
@@ -305,7 +397,7 @@ QWidget* QtSettingsWindow::buildPage1() {
         desktopPath = GetKnownDesktopPath();
     }
     pathEdit_->setText(toQString(desktopPath));
-    browseButton_ = new QPushButton(tr("\u6D4F\u89C8..."), pathCard);
+    browseButton_ = new QPushButton(text(SettingsStringId::Browse), pathCard);
     browseButton_->setProperty("secondary", true);
     browseButton_->setFixedWidth(104);
 
@@ -326,7 +418,8 @@ QWidget* QtSettingsWindow::buildPage2() {
     outerLayout->setContentsMargins(24, 20, 24, 8);
     outerLayout->setSpacing(8);
 
-    auto* titleLabel = new QLabel(QStringLiteral("\u7B2C\u4E8C\u6B65\uFF1A\u6587\u4EF6\u9009\u62E9\u548C\u66FF\u4EE3\u56FE\u7247\u914D\u7F6E"), page);
+    auto* titleLabel = new QLabel(text(SettingsStringId::Step2Title), page);
+    titleLabel->setObjectName(QStringLiteral("page2TitleLabel"));
     titleLabel->setProperty("subtitle", true);
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(titleFont.pointSize() + 1);
@@ -334,7 +427,7 @@ QWidget* QtSettingsWindow::buildPage2() {
     outerLayout->addWidget(titleLabel);
 
     auto* descLabel = new QLabel(
-        QStringLiteral("选择桌面对象，预览并配置它在拟桌面中的显示图片。导入图片不会修改原始文件。"),
+        text(SettingsStringId::Step2Description),
         page);
     descLabel->setProperty("desc", true);
     outerLayout->addWidget(descLabel);
@@ -351,7 +444,7 @@ QWidget* QtSettingsWindow::buildPage2() {
     leftLayout->setSpacing(6);
 
     {
-        auto* previewTitle = new QLabel(QStringLiteral("\u5DF2\u9009\u6587\u4EF6\u66FF\u4EE3\u56FE\u7247\u9884\u89C8"), leftPanel);
+        auto* previewTitle = new QLabel(text(SettingsStringId::SelectedReplacementPreview), leftPanel);
         previewTitle->setProperty("section", true);
         leftLayout->addWidget(previewTitle);
     }
@@ -372,12 +465,13 @@ QWidget* QtSettingsWindow::buildPage2() {
     midLayout->setContentsMargins(12, 14, 12, 12);
     midLayout->setSpacing(8);
 
-    auto* objectTitle = new QLabel(QStringLiteral("桌面对象"), midPanel);
+    auto* objectTitle = new QLabel(text(SettingsStringId::DesktopObjects), midPanel);
     objectTitle->setProperty("section", true);
     midLayout->addWidget(objectTitle);
 
     searchEdit_ = new QLineEdit(midPanel);
-    searchEdit_->setPlaceholderText(tr("\u641C\u7D22..."));
+    searchEdit_->setPlaceholderText(text(SettingsStringId::Search));
+    searchEdit_->setText(toQString(searchText_));
     midLayout->addWidget(searchEdit_);
 
     objectList_ = new QListWidget(midPanel);
@@ -400,7 +494,7 @@ QWidget* QtSettingsWindow::buildPage2() {
     rightLayout->setSpacing(8);
 
     auto* placeholderLabel = new QLabel(
-        QStringLiteral("选定文件后，在此导入图片并配置替代图。"),
+        text(SettingsStringId::SelectFileHint),
         rightPanel);
     placeholderLabel->setAlignment(Qt::AlignCenter);
     placeholderLabel->setWordWrap(true);
@@ -409,9 +503,9 @@ QWidget* QtSettingsWindow::buildPage2() {
 
     // Import buttons row
     auto* importRow = new QHBoxLayout();
-    importSingleButton_ = new QPushButton(tr("\u5BFC\u5165\u5355\u5F20\u56FE\u7247"), rightPanel);
+    importSingleButton_ = new QPushButton(text(SettingsStringId::ImportImages), rightPanel);
     importSingleButton_->setProperty("secondary", true);
-    importFolderButton_ = new QPushButton(tr("\u5BFC\u5165\u6574\u4E2A\u56FE\u7247\u6587\u4EF6\u5939"), rightPanel);
+    importFolderButton_ = new QPushButton(text(SettingsStringId::ImportFolder), rightPanel);
     importFolderButton_->setProperty("secondary", true);
     importRow->addWidget(importSingleButton_);
     importRow->addWidget(importFolderButton_);
@@ -419,7 +513,7 @@ QWidget* QtSettingsWindow::buildPage2() {
 
     // Icon size slider row
     auto* sizeRow = new QHBoxLayout();
-    auto* sizeLabel = new QLabel(QStringLiteral("桌面显示尺寸"), rightPanel);
+    auto* sizeLabel = new QLabel(text(SettingsStringId::DesktopDisplaySize), rightPanel);
     iconSizeSlider_ = new QSlider(Qt::Horizontal, rightPanel);
     iconSizeSlider_->setRange(kDesktopIconMinSize, kDesktopIconMaxSize);
     iconSizeSlider_->setTickInterval(32);
@@ -433,7 +527,7 @@ QWidget* QtSettingsWindow::buildPage2() {
     rightLayout->addLayout(sizeRow);
 
     // Candidate list section
-    auto* candidateTitle = new QLabel(QStringLiteral("\u5BF9\u8C61\u5019\u9009\u56FE"), rightPanel);
+    auto* candidateTitle = new QLabel(text(SettingsStringId::ObjectCandidates), rightPanel);
     candidateTitle->setProperty("section", true);
     rightLayout->addWidget(candidateTitle);
 
@@ -466,11 +560,11 @@ QWidget* QtSettingsWindow::buildPage2() {
 
     // Keep related actions together and give the primary action visual weight.
     auto* actionRow = new QHBoxLayout();
-    includeButton_ = new QPushButton(tr("\u5FFD\u7565"), rightPanel);
+    includeButton_ = new QPushButton(text(SettingsStringId::Ignore), rightPanel);
     includeButton_->setProperty("danger", true);
-    includeAllButton_ = new QPushButton(tr("\u5FFD\u7565\u5168\u90E8"), rightPanel);
+    includeAllButton_ = new QPushButton(text(SettingsStringId::IgnoreAll), rightPanel);
     includeAllButton_->setProperty("danger", true);
-    replaceButton_ = new QPushButton(tr("\u66FF\u6362"), rightPanel);
+    replaceButton_ = new QPushButton(text(SettingsStringId::Replace), rightPanel);
     replaceButton_->setProperty("primary", true);
     replaceButton_->setMinimumWidth(120);
     actionRow->addWidget(includeButton_);
@@ -540,7 +634,8 @@ QWidget* QtSettingsWindow::buildPage3() {
     layout->setContentsMargins(34, 28, 34, 12);
     layout->setSpacing(6);
 
-    auto* titleLabel = new QLabel(QStringLiteral("\u7B2C\u4E09\u6B65\uFF1ADesktop \u6A21\u5F0F\u9009\u62E9\u9875\u9762"), page);
+    auto* titleLabel = new QLabel(text(SettingsStringId::Step3Title), page);
+    titleLabel->setObjectName(QStringLiteral("page3TitleLabel"));
     titleLabel->setProperty("subtitle", true);
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(titleFont.pointSize() + 1);
@@ -548,7 +643,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     layout->addWidget(titleLabel);
 
     auto* descLabel = new QLabel(
-        QStringLiteral("Wallpaper Engine 动态壁纸兼容模式保留动态壁纸，仅覆盖显示 Musuka 图标。"),
+        text(SettingsStringId::Step3Description),
         page);
     descLabel->setProperty("desc", true);
     layout->addWidget(descLabel);
@@ -559,32 +654,65 @@ QWidget* QtSettingsWindow::buildPage3() {
     auto* modeLayout = new QVBoxLayout(modeCard);
     modeLayout->setContentsMargins(18, 14, 18, 16);
     modeLayout->setSpacing(6);
-    auto* modeTitle = new QLabel(QStringLiteral("运行模式"), modeCard);
+    auto* modeTitle = new QLabel(text(SettingsStringId::VirtualDesktopMode), modeCard);
     modeTitle->setProperty("section", true);
     modeLayout->addWidget(modeTitle);
 
-    modeEngineRadio_ = new QRadioButton(
-        QStringLiteral("Wallpaper Engine 动态壁纸兼容模式"), modeCard);
-    modeWallpaperRadio_ = new QRadioButton(QStringLiteral("静态壁纸模式"), modeCard);
-    modeEngineRadio_->setObjectName(QStringLiteral("wallpaperEngineModeRadio"));
-    modeWallpaperRadio_->setObjectName(QStringLiteral("staticWallpaperModeRadio"));
+    modeStaticVirtualDesktopRadio_ = new QRadioButton(
+        text(SettingsStringId::StaticWallpaperVirtualDesktopMode), modeCard);
+    modeStaticVirtualDesktopRadio_->setObjectName(
+        QStringLiteral("staticWallpaperVirtualDesktopModeRadio"));
 
     auto* modeGroup = new QButtonGroup(page);
-    modeGroup->addButton(modeEngineRadio_);
-    modeGroup->addButton(modeWallpaperRadio_);
+    modeGroup->addButton(modeStaticVirtualDesktopRadio_);
 
-    modeLayout->addWidget(modeWallpaperRadio_);
-    modeLayout->addWidget(modeEngineRadio_);
+    modeLayout->addWidget(modeStaticVirtualDesktopRadio_);
     layout->addWidget(modeCard);
 
-    if (app_->Config().desktopMode == DesktopMode::WallpaperEngine) {
+    auto* compatibilityCard = new QFrame(page);
+    compatibilityCard->setObjectName(QStringLiteral("compatibilityModeOptions"));
+    compatibilityCard->setProperty("card", true);
+    auto* compatibilityLayout = new QVBoxLayout(compatibilityCard);
+    compatibilityLayout->setContentsMargins(18, 14, 18, 16);
+    compatibilityLayout->setSpacing(6);
+    auto* compatibilityTitle = new QLabel(text(SettingsStringId::CompatibilityMode), compatibilityCard);
+    compatibilityTitle->setProperty("section", true);
+    compatibilityLayout->addWidget(compatibilityTitle);
+
+    modeDesktopStaticCompatibilityRadio_ = new QRadioButton(
+        text(SettingsStringId::DesktopStaticWallpaperCompatibilityMode), compatibilityCard);
+    modeEngineRadio_ = new QRadioButton(
+        text(SettingsStringId::WallpaperEngineCompatibilityMode), compatibilityCard);
+    modeDesktopStaticCompatibilityRadio_->setObjectName(
+        QStringLiteral("desktopStaticWallpaperCompatibilityModeRadio"));
+    modeEngineRadio_->setObjectName(QStringLiteral("wallpaperEngineModeRadio"));
+    modeGroup->addButton(modeDesktopStaticCompatibilityRadio_);
+    modeGroup->addButton(modeEngineRadio_);
+    compatibilityLayout->addWidget(modeDesktopStaticCompatibilityRadio_);
+    compatibilityLayout->addWidget(modeEngineRadio_);
+    layout->addWidget(compatibilityCard);
+
+    switch (app_->Config().desktopMode) {
+    case DesktopMode::DesktopStaticWallpaperCompatibility:
+        modeDesktopStaticCompatibilityRadio_->setChecked(true);
+        break;
+    case DesktopMode::WallpaperEngineCompatibility:
         modeEngineRadio_->setChecked(true);
-    } else {
-        modeWallpaperRadio_->setChecked(true);
+        break;
+    case DesktopMode::StaticWallpaperVirtualDesktop:
+        modeStaticVirtualDesktopRadio_->setChecked(true);
+        break;
     }
 
     connect(modeEngineRadio_, &QRadioButton::toggled, this, &QtSettingsWindow::onModeEngineToggled);
-    connect(modeWallpaperRadio_, &QRadioButton::toggled, this, &QtSettingsWindow::onModeWallpaperToggled);
+    connect(modeDesktopStaticCompatibilityRadio_,
+            &QRadioButton::toggled,
+            this,
+            &QtSettingsWindow::onModeDesktopStaticCompatibilityToggled);
+    connect(modeStaticVirtualDesktopRadio_,
+            &QRadioButton::toggled,
+            this,
+            &QtSettingsWindow::onModeStaticVirtualDesktopToggled);
 
     // Background source group
     auto* backgroundCard = new QFrame(page);
@@ -594,12 +722,12 @@ QWidget* QtSettingsWindow::buildPage3() {
     auto* backgroundLayout = new QVBoxLayout(backgroundCard);
     backgroundLayout->setContentsMargins(18, 14, 18, 16);
     backgroundLayout->setSpacing(8);
-    auto* bgLabel = new QLabel(QStringLiteral("静态壁纸来源"), backgroundCard);
+    auto* bgLabel = new QLabel(text(SettingsStringId::StaticWallpaperSource), backgroundCard);
     bgLabel->setProperty("section", true);
     backgroundLayout->addWidget(bgLabel);
 
-    bgSystemRadio_ = new QRadioButton(QStringLiteral("使用当前系统静态壁纸"), backgroundCard);
-    bgSolidRadio_ = new QRadioButton(QStringLiteral("使用 musuka 纯色背景"), backgroundCard);
+    bgSystemRadio_ = new QRadioButton(text(SettingsStringId::UseCurrentSystemStaticWallpaper), backgroundCard);
+    bgSolidRadio_ = new QRadioButton(text(SettingsStringId::UseMusukaSolidColor), backgroundCard);
 
     auto* bgGroup = new QButtonGroup(page);
     bgGroup->addButton(bgSystemRadio_);
@@ -620,7 +748,7 @@ QWidget* QtSettingsWindow::buildPage3() {
     // Color chooser row
     auto* colorRow = new QHBoxLayout();
     colorRow->setContentsMargins(28, 0, 0, 0);
-    chooseColorButton_ = new QPushButton(tr("\u9009\u62E9\u989C\u8272"), backgroundCard);
+    chooseColorButton_ = new QPushButton(text(SettingsStringId::ChooseColor), backgroundCard);
     chooseColorButton_->setProperty("secondary", true);
     chooseColorButton_->setFixedWidth(110);
 
@@ -645,8 +773,8 @@ QWidget* QtSettingsWindow::buildPage3() {
     }
 
     wallpaperInfoLabel_ = new QLabel(
-        hasWallpaper ? toQString(L"\u5F53\u524D\u7CFB\u7EDF\u9759\u6001\u58C1\u7EB8\uFF1A" + wallpaperPath)
-                     : QStringLiteral("\u5F53\u524D\u7CFB\u7EDF\u9759\u6001\u58C1\u7EB8\u8BFB\u53D6\u5931\u8D25\uFF0C\u53EF\u6539\u7528 musuka \u7EAF\u8272\u80CC\u666F\u3002"),
+        hasWallpaper ? text(SettingsStringId::CurrentSystemStaticWallpaperPrefix) + toQString(wallpaperPath)
+                     : text(SettingsStringId::CurrentSystemStaticWallpaperReadFailed),
         backgroundCard);
     wallpaperInfoLabel_->setObjectName(QStringLiteral("infoLabel"));
     wallpaperInfoLabel_->setWordWrap(true);
@@ -655,7 +783,8 @@ QWidget* QtSettingsWindow::buildPage3() {
     infoIndentLayout->addWidget(wallpaperInfoLabel_);
     backgroundLayout->addLayout(infoIndentLayout);
     layout->addWidget(backgroundCard);
-    backgroundCard->setVisible(app_->Config().desktopMode == DesktopMode::Wallpaper);
+    backgroundCard->setVisible(
+        app_->Config().desktopMode == DesktopMode::StaticWallpaperVirtualDesktop);
 
     layout->addStretch();
 
@@ -687,7 +816,7 @@ void QtSettingsWindow::onBrowsePath() {
         : app_->Config().desktopPath;
     const QString dir = QFileDialog::getExistingDirectory(
         this,
-        tr("选择桌面文件夹"),
+        text(SettingsStringId::SelectDesktopFolder),
         toQString(current),
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (!dir.isEmpty() && pathEdit_) {
@@ -700,7 +829,7 @@ void QtSettingsWindow::onPage1Next() {
         ? fromString(pathEdit_->text())
         : app_->Config().desktopPath;
     if (!DirectoryExists(path)) {
-        QMessageBox::warning(this, tr("musuka"), tr("桌面路径不存在，请重新选择。"));
+        QMessageBox::warning(this, QStringLiteral("musuka"), text(SettingsStringId::DesktopPathMissing));
         return;
     }
 
@@ -709,12 +838,12 @@ void QtSettingsWindow::onPage1Next() {
     std::wstring error;
     std::wstring warning;
     if (!scanner.ScanAndPrepare(app_->Config(), error, warning)) {
-        QMessageBox::critical(this, tr("musuka"), toQString(error));
+        QMessageBox::critical(this, QStringLiteral("musuka"), localizedMessage(error));
         return;
     }
     saveConfigQuietly();
     if (!warning.empty()) {
-        QMessageBox::information(this, tr("musuka"), toQString(warning));
+        QMessageBox::information(this, QStringLiteral("musuka"), localizedMessage(warning));
     }
     currentPage_ = 1;
     selectedObjectIndex_ = app_->Config().objects.empty() ? -1 : 0;
@@ -746,12 +875,12 @@ void QtSettingsWindow::onPage2Next() {
 
 void QtSettingsWindow::onRunDesktop() {
     AppConfig& config = app_->Config();
-    if (config.desktopMode == DesktopMode::Wallpaper &&
+    if (config.desktopMode == DesktopMode::StaticWallpaperVirtualDesktop &&
         config.backgroundSource == BackgroundSource::SystemWallpaper) {
         std::wstring wallpaperPath;
         if (!TryGetSystemWallpaperPath(wallpaperPath)) {
-            QMessageBox::critical(this, tr("musuka"),
-                tr("读取系统静态壁纸失败，请选择 musuka 纯色背景。"));
+            QMessageBox::critical(this, QStringLiteral("musuka"),
+                text(SettingsStringId::SystemStaticWallpaperReadFailed));
             config.backgroundSource = BackgroundSource::SolidColor;
             if (bgSolidRadio_) {
                 bgSolidRadio_->setChecked(true);
@@ -761,9 +890,10 @@ void QtSettingsWindow::onRunDesktop() {
         config.systemWallpaperPath = wallpaperPath;
     }
 
+    configSaveTimer_->stop();
     std::wstring error;
     if (!app_->Store().Save(config, error)) {
-        QMessageBox::critical(this, tr("musuka"), toQString(error));
+        QMessageBox::critical(this, QStringLiteral("musuka"), localizedMessage(error));
         return;
     }
     app_->ShowDesktop();
@@ -807,16 +937,16 @@ void QtSettingsWindow::onImportSingle() {
     }
     const QStringList files = QFileDialog::getOpenFileNames(
         this,
-        tr("选择图片文件"),
+        text(SettingsStringId::SelectImageFiles),
         QString(),
-        tr("Images (*.png *.jpg *.jpeg *.bmp);;All Files (*)"));
+        text(SettingsStringId::ImageFileFilter));
     if (files.isEmpty()) {
         return;
     }
     for (const QString& filePath : files) {
         std::wstring error;
         if (!addCandidateFromFile(*object, fromString(filePath), error)) {
-            QMessageBox::critical(this, tr("musuka"), toQString(error));
+            QMessageBox::critical(this, QStringLiteral("musuka"), localizedMessage(error));
             break;
         }
     }
@@ -831,7 +961,7 @@ void QtSettingsWindow::onImportFolder() {
     }
     const QString folder = QFileDialog::getExistingDirectory(
         this,
-        tr("导入整个图片文件夹"),
+        text(SettingsStringId::ImportImageFolder),
         QString(),
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     if (folder.isEmpty()) {
@@ -839,16 +969,23 @@ void QtSettingsWindow::onImportFolder() {
     }
     const auto images = EnumerateImageFiles(fromString(folder), false);
     if (images.empty()) {
-        QMessageBox::critical(this, tr("musuka"),
-            tr("该文件夹中没有支持的图片格式。当前只导入所选文件夹内的图片，不递归子目录。"));
+        QMessageBox::critical(this, QStringLiteral("musuka"),
+            text(SettingsStringId::NoSupportedImagesInFolder));
         return;
     }
     if (images.size() > 50) {
-        const std::wstring message = L"该文件夹内有 " + std::to_wstring(images.size()) +
-            L" 张图片。确认批量导入这些图片吗？";
-        if (QMessageBox::question(this, tr("musuka"),
-                                  toQString(message),
-                                  QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+        const QString message = text(SettingsStringId::BulkImportConfirmation)
+                                    .arg(static_cast<qulonglong>(images.size()));
+        QMessageBox confirmation(QMessageBox::Question,
+                                 QStringLiteral("musuka"),
+                                 message,
+                                 QMessageBox::NoButton,
+                                 this);
+        QPushButton* yesButton = confirmation.addButton(text(SettingsStringId::Yes),
+                                                        QMessageBox::YesRole);
+        confirmation.addButton(text(SettingsStringId::No), QMessageBox::NoRole);
+        confirmation.exec();
+        if (confirmation.clickedButton() != yesButton) {
             return;
         }
     }
@@ -870,20 +1007,19 @@ void QtSettingsWindow::onImportFolder() {
     }
     if (imported == 0) {
         if (skipped > 0) {
-            QMessageBox::information(this, tr("musuka"),
-                tr("所选文件夹中的图片已经全部导入过，本次未新增候选图片。"));
+            QMessageBox::information(this, QStringLiteral("musuka"),
+                text(SettingsStringId::FolderImagesAlreadyImported));
             return;
         }
-        QMessageBox::critical(this, tr("musuka"),
-            toQString(lastError.empty() ? L"图片导入失败。" : lastError));
+        QMessageBox::critical(this, QStringLiteral("musuka"),
+            lastError.empty() ? text(SettingsStringId::ImageImportFailed) : localizedMessage(lastError));
         return;
     }
     saveConfigQuietly();
     refreshSelectedObjectControls();
     if (images.size() > 1 || skipped > 0) {
-        QMessageBox::information(this, tr("musuka"),
-            toQString(L"已导入 " + std::to_wstring(imported) +
-                     L" 张图片，跳过 " + std::to_wstring(skipped) + L" 张重复图片。"));
+        QMessageBox::information(this, QStringLiteral("musuka"),
+            text(SettingsStringId::ImportSummary).arg(imported).arg(skipped));
     }
 }
 
@@ -921,7 +1057,7 @@ void QtSettingsWindow::onToggleIncludeAll() {
 void QtSettingsWindow::onReplaceSelected() {
     DesktopObject* object = selectedObject();
     if (!object) {
-        QMessageBox::warning(this, tr("musuka"), tr("请先选择一个候选图片。"));
+        QMessageBox::warning(this, QStringLiteral("musuka"), text(SettingsStringId::SelectCandidateFirst));
         return;
     }
     const ImageCandidate* candidate = nullptr;
@@ -937,7 +1073,7 @@ void QtSettingsWindow::onReplaceSelected() {
         SelectObjectCandidate(*object, selectedCandidateIndex_);
     }
     if (!candidate) {
-        QMessageBox::warning(this, tr("musuka"), tr("请先选择一个候选图片。"));
+        QMessageBox::warning(this, QStringLiteral("musuka"), text(SettingsStringId::SelectCandidateFirst));
         return;
     }
     object->iconSize = PreferredIconSizeForCandidate(*candidate);
@@ -974,18 +1110,29 @@ void QtSettingsWindow::onModeEngineToggled(bool checked) {
     if (!checked) {
         return;
     }
-    app_->Config().desktopMode = DesktopMode::WallpaperEngine;
+    app_->Config().desktopMode = DesktopMode::WallpaperEngineCompatibility;
     if (staticWallpaperOptions_) {
         staticWallpaperOptions_->setVisible(false);
     }
     saveConfigQuietly();
 }
 
-void QtSettingsWindow::onModeWallpaperToggled(bool checked) {
+void QtSettingsWindow::onModeDesktopStaticCompatibilityToggled(bool checked) {
     if (!checked) {
         return;
     }
-    app_->Config().desktopMode = DesktopMode::Wallpaper;
+    app_->Config().desktopMode = DesktopMode::DesktopStaticWallpaperCompatibility;
+    if (staticWallpaperOptions_) {
+        staticWallpaperOptions_->setVisible(false);
+    }
+    saveConfigQuietly();
+}
+
+void QtSettingsWindow::onModeStaticVirtualDesktopToggled(bool checked) {
+    if (!checked) {
+        return;
+    }
+    app_->Config().desktopMode = DesktopMode::StaticWallpaperVirtualDesktop;
     if (staticWallpaperOptions_) {
         staticWallpaperOptions_->setVisible(true);
     }
@@ -1013,7 +1160,7 @@ void QtSettingsWindow::onChooseColor() {
         GetRValue(app_->Config().solidColor),
         GetGValue(app_->Config().solidColor),
         GetBValue(app_->Config().solidColor));
-    QColor chosen = QColorDialog::getColor(initialColor, this, tr("选择颜色"));
+    QColor chosen = QColorDialog::getColor(initialColor, this, text(SettingsStringId::ChooseColor));
     if (!chosen.isValid()) {
         return;
     }
@@ -1031,6 +1178,20 @@ void QtSettingsWindow::onChooseColor() {
             QStringLiteral("background-color: rgb(%1, %2, %3); border: 1px solid #505050;")
                 .arg(GetRValue(c)).arg(GetGValue(c)).arg(GetBValue(c)));
     }
+}
+
+void QtSettingsWindow::onLanguageChanged(int index) {
+    if (!languageCombo_ || index < 0) {
+        return;
+    }
+    const auto language = static_cast<SettingsLanguage>(
+        languageCombo_->itemData(index).toInt());
+    if (language == app_->Config().settingsLanguage) {
+        return;
+    }
+    app_->Config().settingsLanguage = language;
+    flushConfigSave();
+    rebuildUi();
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,7 +1220,7 @@ void QtSettingsWindow::populateObjectList() {
         DesktopObject& object = objects[static_cast<size_t>(objectIndex)];
         HICON icon = LoadShellIconForObject(object, true);
         QListWidgetItem* item = new QListWidgetItem();
-        item->setText(toQString(ObjectListText(object)));
+        item->setText(ObjectListText(object, app_->Config().settingsLanguage));
         item->setData(Qt::UserRole, objectIndex);
         if (icon) {
             item->setIcon(QIcon(QPixmap::fromImage(QImage::fromHICON(icon))));
@@ -1078,7 +1239,8 @@ void QtSettingsWindow::populateObjectList() {
     }
     if (filteredObjects_.empty()) {
         AddEmptyListMessage(objectList_,
-            query.empty() ? tr("未扫描到桌面对象") : tr("没有匹配的桌面对象"));
+            query.empty() ? text(SettingsStringId::NoDesktopObjects)
+                          : text(SettingsStringId::NoMatchingDesktopObjects));
     }
     objectList_->blockSignals(false);
 }
@@ -1098,7 +1260,8 @@ void QtSettingsWindow::updateObjectListItem(int objectIndex) {
     if (!item) {
         return;
     }
-    item->setText(toQString(ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)])));
+    item->setText(ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)],
+                                 app_->Config().settingsLanguage));
     QFont font = item->font();
     font.setStrikeOut(!app_->Config().objects[static_cast<size_t>(objectIndex)].includeInDesktop);
     item->setFont(font);
@@ -1121,7 +1284,8 @@ void QtSettingsWindow::updateVisibleObjectItems() {
         if (objectIndex < 0 || objectIndex >= static_cast<int>(app_->Config().objects.size())) {
             continue;
         }
-        item->setText(toQString(ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)])));
+        item->setText(ObjectListText(app_->Config().objects[static_cast<size_t>(objectIndex)],
+                                     app_->Config().settingsLanguage));
         QFont font = item->font();
         font.setStrikeOut(!app_->Config().objects[static_cast<size_t>(objectIndex)].includeInDesktop);
         item->setFont(font);
@@ -1141,7 +1305,7 @@ void QtSettingsWindow::populateCandidateList() {
 
     DesktopObject* object = selectedObject();
     if (!object) {
-        AddEmptyListMessage(candidateList_, tr("请先选择桌面对象"));
+        AddEmptyListMessage(candidateList_, text(SettingsStringId::SelectDesktopObjectFirst));
         candidateList_->blockSignals(false);
         return;
     }
@@ -1160,14 +1324,16 @@ void QtSettingsWindow::populateCandidateList() {
             pix = CreateBlankThumbnailPixmap(kQtThumbnailRenderSize);
         }
 
-        std::wstring text = candidate.displayName.empty()
-            ? FileNameFromPath(candidate.internalPath)
-            : candidate.displayName;
+        QString displayText = candidate.originalIcon
+            ? text(SettingsStringId::OriginalIcon)
+            : toQString(candidate.displayName.empty()
+                ? FileNameFromPath(candidate.internalPath)
+                : candidate.displayName);
         if (SameInternalPath(candidate.internalPath, object->selectedImageInternalPath)) {
-            text = L"[当前] " + text;
+            displayText = text(SettingsStringId::CurrentPrefix) + displayText;
         }
 
-        QListWidgetItem* item = new QListWidgetItem(QIcon(pix), toQString(text));
+        QListWidgetItem* item = new QListWidgetItem(QIcon(pix), displayText);
         item->setData(Qt::UserRole, i);
         if (!selectedDefaultImage_ && i == selectedCandidateIndex_) {
             item->setSelected(true);
@@ -1175,7 +1341,7 @@ void QtSettingsWindow::populateCandidateList() {
         candidateList_->addItem(item);
     }
     if (object->candidates.empty()) {
-        AddEmptyListMessage(candidateList_, tr("暂无对象专属候选图"));
+        AddEmptyListMessage(candidateList_, text(SettingsStringId::NoObjectCandidates));
     }
     candidateList_->blockSignals(false);
 }
@@ -1284,7 +1450,7 @@ void QtSettingsWindow::populateDefaultImageList() {
 
     DesktopObject* object = selectedObject();
     if (!object) {
-        AddEmptyListMessage(defaultImageList_, tr("请先选择桌面对象"));
+        AddEmptyListMessage(defaultImageList_, text(SettingsStringId::SelectDesktopObjectFirst));
         defaultImageList_->blockSignals(false);
         return;
     }
@@ -1303,14 +1469,14 @@ void QtSettingsWindow::populateDefaultImageList() {
             pix = CreateBlankThumbnailPixmap(kQtThumbnailRenderSize);
         }
 
-        std::wstring text = candidate.displayName.empty()
+        QString displayText = toQString(candidate.displayName.empty()
             ? FileNameFromPath(candidate.internalPath)
-            : candidate.displayName;
+            : candidate.displayName);
         if (SameInternalPath(candidate.internalPath, object->selectedImageInternalPath)) {
-            text = L"[当前] " + text;
+            displayText = text(SettingsStringId::CurrentPrefix) + displayText;
         }
 
-        QListWidgetItem* item = new QListWidgetItem(QIcon(pix), toQString(text));
+        QListWidgetItem* item = new QListWidgetItem(QIcon(pix), displayText);
         item->setData(Qt::UserRole, i);
         if (selectedDefaultImage_ && i == selectedDefaultImageIndex_) {
             item->setSelected(true);
@@ -1318,7 +1484,7 @@ void QtSettingsWindow::populateDefaultImageList() {
         defaultImageList_->addItem(item);
     }
     if (defaultImageCandidates_.empty()) {
-        AddEmptyListMessage(defaultImageList_, tr("default_image 目录中暂无图片"));
+        AddEmptyListMessage(defaultImageList_, text(SettingsStringId::NoDefaultImages));
     }
     defaultImageList_->blockSignals(false);
 }
@@ -1363,7 +1529,6 @@ void QtSettingsWindow::applyStyleSheet() {
             color: #555;
             font-size: 10pt;
             padding: 2px 0px 12px 0px;
-            line-height: 1.4;
         }
 
         /* ── Section headers in Page 2 ─────── */
@@ -1463,7 +1628,7 @@ void QtSettingsWindow::applyStyleSheet() {
         /* ── Line edits (path input, search) ─*/
         QLineEdit {
             background-color: white;
-            border: 1.5px solid #ccd1d9;
+            border: 1px solid #ccd1d9;
             border-radius: 6px;
             padding: 7px 12px;
             font-size: 10pt;
@@ -1472,11 +1637,21 @@ void QtSettingsWindow::applyStyleSheet() {
         }
         QLineEdit:focus {
             border-color: #4a90d9;
-            border-width: 2px;
         }
         QLineEdit:read-only {
             background-color: #f8f9fa;
             color: #555;
+        }
+        QComboBox#settingsLanguageCombo {
+            background-color: white;
+            border: 1px solid #ccd1d9;
+            border-radius: 5px;
+            padding: 4px 24px 4px 8px;
+            min-width: 92px;
+        }
+        QComboBox#settingsLanguageCombo:hover,
+        QComboBox#settingsLanguageCombo:focus {
+            border-color: #4a90d9;
         }
 
         /* ── Object list (Page 2 left-center) ─*/
@@ -1669,7 +1844,7 @@ void QtSettingsWindow::drawPreview() {
     ImageCandidate candidate;
     if (!object || !resolveCurrentCandidate(*object, candidate)) {
         previewLabel_->setPixmap(QPixmap());
-        previewLabel_->setText(tr("\u672A\u9009\u4E2D\u6587\u4EF6"));
+        previewLabel_->setText(text(SettingsStringId::NoFileSelected));
         return;
     }
 
@@ -1688,11 +1863,11 @@ void QtSettingsWindow::drawPreview() {
                 previewLabel_->setText(QString());
             } else {
                 previewLabel_->setPixmap(QPixmap());
-                previewLabel_->setText(tr("\u539F\u59CB\u56FE\u6807"));
+                previewLabel_->setText(text(SettingsStringId::OriginalIcon));
             }
         } else {
             previewLabel_->setPixmap(QPixmap());
-            previewLabel_->setText(tr("\u539F\u59CB\u56FE\u6807"));
+            previewLabel_->setText(text(SettingsStringId::OriginalIcon));
         }
         return;
     }
@@ -1708,7 +1883,7 @@ void QtSettingsWindow::drawPreview() {
         previewLabel_->setText(QString());
     } else {
         previewLabel_->setPixmap(QPixmap());
-        previewLabel_->setText(tr("图片读取失败"));
+        previewLabel_->setText(text(SettingsStringId::ImageReadFailed));
     }
 }
 
@@ -1746,14 +1921,18 @@ void QtSettingsWindow::updateSelectionDetailControls() {
     if (replaceButton_) replaceButton_->setVisible(!!object);
 
     if (includeButton_ && object) {
-        includeButton_->setText(object->includeInDesktop ? tr("忽略") : tr("带入"));
+        includeButton_->setText(object->includeInDesktop
+            ? text(SettingsStringId::Ignore)
+            : text(SettingsStringId::Include));
     }
     if (includeAllButton_) {
         const auto& objects = app_->Config().objects;
         const bool anyIncluded = std::any_of(objects.begin(), objects.end(), [](const DesktopObject& item) {
             return item.includeInDesktop;
         });
-        includeAllButton_->setText(anyIncluded ? tr("忽略全部") : tr("带入全部"));
+        includeAllButton_->setText(anyIncluded
+            ? text(SettingsStringId::IgnoreAll)
+            : text(SettingsStringId::IncludeAll));
     }
     if (iconSizeSlider_ && object) {
         const int size = std::clamp(object->iconSize, kDesktopIconMinSize, kDesktopIconMaxSize);
@@ -1823,6 +2002,11 @@ bool QtSettingsWindow::addCandidateFromFile(DesktopObject& object, const std::ws
 // ---------------------------------------------------------------------------
 
 void QtSettingsWindow::saveConfigQuietly() {
+    configSaveTimer_->start(kConfigSaveDelayMs);
+}
+
+void QtSettingsWindow::flushConfigSave() {
+    configSaveTimer_->stop();
     std::wstring error;
     app_->Store().Save(app_->Config(), error);
 }

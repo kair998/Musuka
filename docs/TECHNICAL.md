@@ -1,6 +1,6 @@
 # Musuka 技术文档
 
-本文面向参与 Musuka 开发、构建、测试和发布的维护者。用户使用说明见[主 README](../README.md)，更新历史见[更新记录](updates/README.md)，安全相关细节见[安全审计](SECURITY_AUDIT.md)。
+本文面向参与 Musuka 开发、构建、测试和发布的维护者。用户使用说明见[主 README](../README.md)，性能结果见[性能优化报告](PERFORMANCE_OPTIMIZATION.md)，更新历史见[更新记录](updates/README.md)，安全相关细节见[安全审计](SECURITY_AUDIT.md)。
 
 ## 技术栈
 
@@ -11,7 +11,7 @@
 - 配置格式：项目内置 JSON 解析与序列化
 - 目标平台：Windows 10/11 x64
 
-Musuka 仅支持 Qt 设置界面。Qt 负责设置窗口、控件和应用主事件循环；拟桌面窗口仍使用 Win32 与 Explorer、Wallpaper Engine 和 Windows Shell 集成。
+Musuka 仅支持 Qt 设置界面。Qt 负责设置窗口、控件和应用主事件循环；桌面图标层仍使用 Win32 与 Explorer、Wallpaper Engine 和 Windows Shell 集成。
 
 ## 项目结构
 
@@ -36,11 +36,12 @@ Musuka\
 
 | 模块 | 职责 |
 |---|---|
-| `main.cpp` | 初始化 `QApplication`、COM、GDI+，启动应用 |
-| `App.cpp/.h` | 管理配置、Qt 设置窗口、拟桌面窗口和应用生命周期 |
+| `main.cpp` | 初始化 `QApplication`、COM、GDI+，持有 Qt 设置窗口并启动应用 |
+| `App.cpp/.h` | 管理配置、拟桌面窗口，并协调设置窗口和应用生命周期 |
 | `QtSettingsWindow.cpp/.h` | 三步设置界面、对象配置、图片导入与模式选择 |
+| `SettingsLocalization.cpp/.h` | Settings 中英日文案、语言名称和提示消息本地化 |
 | `DesktopScanner.cpp/.h` | 扫描桌面对象、生成稳定对象 ID、提取原始图标 |
-| `DesktopWindow.cpp/.h` | 拟桌面绘制、命中测试、拖动、缩放、打开对象和 Wallpaper Engine 集成 |
+| `DesktopWindow.cpp/.h` | 桌面图标层绘制、命中测试、拖动、缩放、打开对象和桌面兼容模式集成 |
 | `Models.h` | 应用配置、桌面对象和候选图片数据模型 |
 | `ConfigStore.cpp/.h` | `data/config.json` 的加载、迁移、备份和原子保存 |
 | `ImageUtil.cpp/.h` | 图片验证、解码、缩放、预览、透明命中和图标导出 |
@@ -56,12 +57,12 @@ wWinMain
   -> QApplication / COM / GDI+ 初始化
   -> App::Initialize
      -> ConfigStore::Load
+  -> QtSettingsWindow 构造并挂接到 App
   -> App::ShowSettings
-     -> QtSettingsWindow
   -> QApplication::exec
 ```
 
-用户点击设置页中的“运行”后，`App` 隐藏 Qt 设置窗口并创建 `DesktopWindow`。从拟桌面返回设置时，`DesktopWindow` 被隐藏，Qt 设置页重新显示。退出时配置会保存，并恢复动态壁纸兼容模式下暂时隐藏的 Explorer 桌面图标。
+用户点击设置页中的“运行”后，`App` 隐藏 Qt 设置窗口并创建 `DesktopWindow`。从桌面图标层返回设置时，`DesktopWindow` 被隐藏，Qt 设置页重新显示。退出时配置会保存，并恢复兼容模式下暂时隐藏的 Explorer 桌面图标。
 
 Qt 是唯一的应用 UI 主循环。Win32 拟桌面窗口产生的消息由 Qt 的 Windows 平台事件分发器共同处理，不再维护独立的原生 Settings 窗口或第二套消息循环。
 
@@ -131,16 +132,24 @@ data\
 
 1. 选择桌面扫描路径。
 2. 配置桌面对象、候选图片、共享默认图片和显示尺寸。
-3. 选择静态壁纸模式或 Wallpaper Engine 动态壁纸兼容模式。
+3. 选择静态壁纸拟桌面模式，或从“兼容模式”中选择桌面静态壁纸兼容模式、Wallpaper Engine 动态壁纸兼容模式。
 
 候选图片区分为：
 
 - 对象候选图：原始图标和用户导入图。
 - `default_image`：所有对象共享的内置候选图。
 
-静态壁纸来源和纯色背景控件仅在选择静态壁纸模式时显示。
+静态壁纸来源和纯色背景控件仅在选择静态壁纸拟桌面模式时显示。
 
-## 拟桌面与渲染
+Settings 底部导航栏提供 `中文`、`English`、`日本語` 语言选择。切换后立即重建并刷新当前 Settings 页面，同时保留当前页面、对象选择和配置状态。语言写入 `data/config.json` 的 `settings_language`，支持值：
+
+- `zh_CN`
+- `en`
+- `ja`
+
+当前本地化范围包括三步 Settings 页面、模式名称、导航与操作按钮、列表状态、预览状态、文件导入对话框标题以及 Settings 阶段显示的常见错误和警告消息。
+
+## 桌面图标层与渲染
 
 `DesktopWindow` 使用 GDI+ 绘制背景、替换图片、原始图标标签、选择框和选中状态。主要交互包括：
 
@@ -153,20 +162,32 @@ data\
 
 原始图标优先采用左侧紧凑列布局；替换图片使用更大的默认尺寸和视觉留白。未保存位置的对象会自动排列，已有位置不会被自动布局覆盖。
 
-### 静态壁纸模式
+### 静态壁纸拟桌面模式
 
 Musuka 创建覆盖主屏幕的拟桌面窗口，绘制当前系统静态壁纸或配置的纯色背景。该模式不修改真实桌面文件。
 
-### Wallpaper Engine 动态壁纸兼容模式
+### 兼容模式
 
-Musuka 查找 Explorer 的桌面宿主窗口，将带透明色键的拟桌面窗口附着到桌面图标层：
+桌面静态壁纸兼容模式和 Wallpaper Engine 动态壁纸兼容模式共用兼容模式集成。Musuka 查找 Explorer 的桌面宿主窗口，将带透明色键的桌面图标层附着到桌面宿主：
 
-- 保留 Wallpaper Engine 动态壁纸画面。
+- 保留底层 Windows 静态壁纸或 Wallpaper Engine 动态壁纸画面。
 - 绘制 Musuka 替换图标。
 - 运行期间隐藏 Explorer 原桌面图标列表。
 - 返回设置或正常退出时恢复 Explorer 原桌面图标。
 
-如果程序被强制终止，可能需要重启 Windows Explorer 恢复原桌面图标。
+`桌面静态壁纸兼容模式` 用于直接在 Windows 当前静态壁纸画面上运行；`Wallpaper Engine 动态壁纸兼容模式` 用于保留 Wallpaper Engine 动态壁纸播放。两种模式都不会加载或重绘静态壁纸，静态壁纸来源和纯色背景设置会隐藏并被忽略。
+
+兼容模式需要能够发现 Explorer 桌面宿主窗口。如果程序被强制终止，可能需要重启 Windows Explorer 恢复原桌面图标。
+
+### 模式配置值
+
+`data/config.json` 中的 `desktop_mode` 使用：
+
+- `static_wallpaper_virtual_desktop`
+- `desktop_static_wallpaper_compatibility`
+- `wallpaper_engine_compatibility`
+
+旧配置值 `wallpaper` 和 `wallpaper_engine` 会分别迁移为静态壁纸拟桌面模式和 Wallpaper Engine 动态壁纸兼容模式。
 
 ## 图片处理与安全约束
 
@@ -251,11 +272,13 @@ ctest --test-dir build-nmake --output-on-failure
 `wallpaper_engine_smoke` 当前覆盖：
 
 - Explorer 桌面宿主与图标列表发现。
-- Wallpaper Engine 模式桌面窗口附着和透明色键。
+- 桌面静态壁纸兼容模式和 Wallpaper Engine 动态壁纸兼容模式的桌面窗口附着与透明色键。
 - 替换图标绘制。
 - Explorer 原桌面图标隐藏与恢复。
-- Qt 模式名称。
+- Qt 模式名称与兼容模式分组。
+- Settings 中英日即时切换、文案和语言配置值。
 - 静态壁纸选项显示与隐藏。
+- 三种模式配置值序列化及旧配置值迁移。
 - 纯色预览尺寸和颜色。
 
 建议发布前同时执行：
@@ -273,6 +296,6 @@ package.bat
 - 不要恢复原生 Win32 Settings 界面或非 Qt 构建分支。
 - 不要把 `default_image` 复制到每个对象目录或每个对象配置中。
 - 不要绕过图片验证、对象 ID 验证和内部路径检查。
-- 修改 Wallpaper Engine 集成后必须验证 Explorer 图标能够恢复。
+- 修改兼容模式集成后必须验证 Explorer 图标能够恢复。
 - 修改设置界面后同步更新 Qt 冒烟测试。
 - 每次可见功能、构建或兼容性更新都应在 [`docs/updates`](updates/README.md) 新增记录。

@@ -158,12 +158,13 @@ DesktopObject ObjectFromJson(const JsonValue& value) {
 
 JsonValue ConfigToJson(const AppConfig& config) {
     JsonValue::Object root;
-    root["version"] = JsonValue::Number(3);
+    root["version"] = JsonValue::Number(5);
     root["desktop_path"] = WideStringValue(config.desktopPath);
     root["desktop_mode"] = WideStringValue(ToString(config.desktopMode));
     root["background_source"] = WideStringValue(ToString(config.backgroundSource));
     root["solid_color"] = WideStringValue(ColorToHex(config.solidColor));
     root["system_wallpaper_path"] = WideStringValue(config.systemWallpaperPath);
+    root["settings_language"] = WideStringValue(ToString(config.settingsLanguage));
 
     JsonValue::Array objects;
     for (const auto& object : config.objects) {
@@ -180,6 +181,7 @@ void ConfigFromJson(const JsonValue& root, AppConfig& config) {
     config.backgroundSource = BackgroundSourceFromString(WideFromValue(root.At("background_source")));
     config.solidColor = ColorFromHex(WideFromValue(root.At("solid_color")), RGB(36, 38, 42));
     config.systemWallpaperPath = WideFromValue(root.At("system_wallpaper_path"));
+    config.settingsLanguage = SettingsLanguageFromString(WideFromValue(root.At("settings_language")));
     config.objects.clear();
     for (const auto& item : root.At("objects").AsArray()) {
         DesktopObject object = ObjectFromJson(item);

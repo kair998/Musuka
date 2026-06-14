@@ -17,13 +17,20 @@ enum class DesktopObjectType {
 };
 
 enum class DesktopMode {
-    WallpaperEngine,
-    Wallpaper
+    StaticWallpaperVirtualDesktop,
+    DesktopStaticWallpaperCompatibility,
+    WallpaperEngineCompatibility
 };
 
 enum class BackgroundSource {
     SystemWallpaper,
     SolidColor
+};
+
+enum class SettingsLanguage {
+    ChineseSimplified,
+    English,
+    Japanese
 };
 
 constexpr int kDesktopIconMinSize = 32;
@@ -97,10 +104,11 @@ inline void SelectExternalCandidate(DesktopObject& object, const ImageCandidate&
 struct AppConfig {
     std::wstring desktopPath;
     std::vector<DesktopObject> objects;
-    DesktopMode desktopMode = DesktopMode::Wallpaper;
+    DesktopMode desktopMode = DesktopMode::StaticWallpaperVirtualDesktop;
     BackgroundSource backgroundSource = BackgroundSource::SystemWallpaper;
     COLORREF solidColor = RGB(36, 38, 42);
     std::wstring systemWallpaperPath;
+    SettingsLanguage settingsLanguage = SettingsLanguage::ChineseSimplified;
 };
 
 inline const wchar_t* ToString(DesktopObjectType type) {
@@ -136,11 +144,33 @@ inline DesktopObjectType DesktopObjectTypeFromString(const std::wstring& value) 
 }
 
 inline const wchar_t* ToString(DesktopMode mode) {
-    return mode == DesktopMode::WallpaperEngine ? L"wallpaper_engine" : L"wallpaper";
+    switch (mode) {
+    case DesktopMode::StaticWallpaperVirtualDesktop:
+        return L"static_wallpaper_virtual_desktop";
+    case DesktopMode::DesktopStaticWallpaperCompatibility:
+        return L"desktop_static_wallpaper_compatibility";
+    case DesktopMode::WallpaperEngineCompatibility:
+        return L"wallpaper_engine_compatibility";
+    }
+    return L"static_wallpaper_virtual_desktop";
 }
 
 inline DesktopMode DesktopModeFromString(const std::wstring& value) {
-    return value == L"wallpaper_engine" ? DesktopMode::WallpaperEngine : DesktopMode::Wallpaper;
+    if (value == L"static_wallpaper_virtual_desktop" || value == L"wallpaper") {
+        return DesktopMode::StaticWallpaperVirtualDesktop;
+    }
+    if (value == L"desktop_static_wallpaper_compatibility") {
+        return DesktopMode::DesktopStaticWallpaperCompatibility;
+    }
+    if (value == L"wallpaper_engine_compatibility" || value == L"wallpaper_engine") {
+        return DesktopMode::WallpaperEngineCompatibility;
+    }
+    return DesktopMode::StaticWallpaperVirtualDesktop;
+}
+
+inline bool IsCompatibilityMode(DesktopMode mode) {
+    return mode == DesktopMode::DesktopStaticWallpaperCompatibility ||
+           mode == DesktopMode::WallpaperEngineCompatibility;
 }
 
 inline const wchar_t* ToString(BackgroundSource source) {
@@ -149,6 +179,28 @@ inline const wchar_t* ToString(BackgroundSource source) {
 
 inline BackgroundSource BackgroundSourceFromString(const std::wstring& value) {
     return value == L"solid_color" ? BackgroundSource::SolidColor : BackgroundSource::SystemWallpaper;
+}
+
+inline const wchar_t* ToString(SettingsLanguage language) {
+    switch (language) {
+    case SettingsLanguage::ChineseSimplified:
+        return L"zh_CN";
+    case SettingsLanguage::English:
+        return L"en";
+    case SettingsLanguage::Japanese:
+        return L"ja";
+    }
+    return L"zh_CN";
+}
+
+inline SettingsLanguage SettingsLanguageFromString(const std::wstring& value) {
+    if (value == L"en") {
+        return SettingsLanguage::English;
+    }
+    if (value == L"ja") {
+        return SettingsLanguage::Japanese;
+    }
+    return SettingsLanguage::ChineseSimplified;
 }
 
 inline std::wstring ObjectStableKey(const DesktopObject& object) {

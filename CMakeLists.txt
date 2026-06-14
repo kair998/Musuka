@@ -32,6 +32,8 @@ set(MUSUKA_SOURCES
     src/Json.cpp
     src/QtSettingsWindow.cpp
     src/QtSettingsWindow.h
+    src/SettingsLocalization.cpp
+    src/SettingsLocalization.h
     src/Util.cpp
     src/WinUtil.cpp
     src/Musuka.rc
@@ -76,6 +78,8 @@ if(BUILD_TESTING)
         src/Json.cpp
         src/QtSettingsWindow.cpp
         src/QtSettingsWindow.h
+        src/SettingsLocalization.cpp
+        src/SettingsLocalization.h
         src/Util.cpp
         src/WinUtil.cpp
         src/Musuka.rc
@@ -85,6 +89,7 @@ if(BUILD_TESTING)
         _UNICODE
         NOMINMAX
         WIN32_LEAN_AND_MEAN
+        MUSUKA_TESTING
     )
     if(MSVC)
         target_compile_options(wallpaper_engine_smoke PRIVATE /W4 /permissive- /utf-8)

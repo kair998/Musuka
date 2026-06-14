@@ -22,6 +22,7 @@ public:
     AppConfig& Config() { return config_; }
     ConfigStore& Store() { return store_; }
 
+    void AttachSettings(QtSettingsWindow* settings);
     void ShowSettings(int page = 0);
     void ShowDesktop();
     void ReturnToSettings();
@@ -32,7 +33,7 @@ private:
     AppConfig config_;
     ConfigStore store_;
     std::unique_ptr<DesktopWindow> desktop_;
-    std::unique_ptr<QtSettingsWindow> qtSettings_;
+    QtSettingsWindow* qtSettings_ = nullptr;
 };
 
 extern App* gApp;

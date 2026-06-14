@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <unordered_map>
+#include <unordered_set>
 #include <windowsx.h>
 
 namespace fs = std::filesystem;
@@ -32,14 +34,14 @@ constexpr int kDesktopMargin = 24;
 constexpr int kNativeAutoArrangeGap = 4;
 constexpr int kReplacementAutoArrangeGap = 16;
 constexpr int kAutoArrangeScanStep = 16;
-constexpr UINT_PTR kWallpaperEngineRefreshTimer = 1;
-constexpr UINT kWallpaperEngineRefreshIntervalMs = 1000;
-constexpr BYTE kWallpaperEngineTransparencyRed = 1;
-constexpr BYTE kWallpaperEngineTransparencyGreen = 2;
-constexpr BYTE kWallpaperEngineTransparencyBlue = 3;
-constexpr COLORREF kWallpaperEngineTransparencyKey = RGB(kWallpaperEngineTransparencyRed,
-                                                         kWallpaperEngineTransparencyGreen,
-                                                         kWallpaperEngineTransparencyBlue);
+constexpr UINT_PTR kCompatibilityRefreshTimer = 1;
+constexpr UINT kCompatibilityRefreshIntervalMs = 1000;
+constexpr BYTE kCompatibilityTransparencyRed = 1;
+constexpr BYTE kCompatibilityTransparencyGreen = 2;
+constexpr BYTE kCompatibilityTransparencyBlue = 3;
+constexpr COLORREF kCompatibilityTransparencyKey = RGB(kCompatibilityTransparencyRed,
+                                                       kCompatibilityTransparencyGreen,
+                                                       kCompatibilityTransparencyBlue);
 
 bool ShellExecuteChecked(HWND owner,
                          const wchar_t* operation,
@@ -226,7 +228,7 @@ DesktopWindow::DesktopWindow(App* app) : app_(app) {}
 DesktopWindow::~DesktopWindow() {
     RestoreDesktopIcons();
     if (hwnd_) {
-        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
+        KillTimer(hwnd_, kCompatibilityRefreshTimer);
         SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -236,11 +238,11 @@ DesktopWindow::~DesktopWindow() {
 bool DesktopWindow::Create() {
     RegisterWindowClass();
 
-    wallpaperEngineMode_ = app_->Config().desktopMode == DesktopMode::WallpaperEngine;
-    HWND requestedDesktopHost = wallpaperEngineMode_ ? FindDesktopHostWindow() : nullptr;
+    compatibilityMode_ = IsCompatibilityMode(app_->Config().desktopMode);
+    HWND requestedDesktopHost = compatibilityMode_ ? FindDesktopHostWindow() : nullptr;
     const RECT bounds = PreferredDesktopBounds();
     const DWORD extendedStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
-                                (wallpaperEngineMode_ ? WS_EX_LAYERED : 0);
+                                (compatibilityMode_ ? WS_EX_LAYERED : 0);
     hwnd_ = CreateWindowExW(extendedStyle,
                             L"MusukaDesktopWindow",
                             L"musuka desktop",
@@ -256,7 +258,7 @@ bool DesktopWindow::Create() {
     if (!hwnd_) {
         return false;
     }
-    if (wallpaperEngineMode_ && requestedDesktopHost) {
+    if (compatibilityMode_ && requestedDesktopHost) {
         AttachToDesktopHost(requestedDesktopHost);
     }
     SendMessageW(hwnd_,
@@ -271,12 +273,12 @@ bool DesktopWindow::Create() {
                  reinterpret_cast<LPARAM>(LoadMusukaIcon(app_->Instance(),
                                                           GetSystemMetrics(SM_CXSMICON),
                                                           GetSystemMetrics(SM_CYSMICON))));
-    if (wallpaperEngineMode_) {
-        SetLayeredWindowAttributes(hwnd_, kWallpaperEngineTransparencyKey, 255, LWA_COLORKEY);
-        RefreshWallpaperEngineIntegration();
+    if (compatibilityMode_) {
+        SetLayeredWindowAttributes(hwnd_, kCompatibilityTransparencyKey, 255, LWA_COLORKEY);
+        RefreshDesktopCompatibilityIntegration();
         SetTimer(hwnd_,
-                 kWallpaperEngineRefreshTimer,
-                 kWallpaperEngineRefreshIntervalMs,
+                 kCompatibilityRefreshTimer,
+                 kCompatibilityRefreshIntervalMs,
                  nullptr);
     }
 
@@ -292,7 +294,7 @@ bool DesktopWindow::Create() {
 void DesktopWindow::Hide() {
     RestoreDesktopIcons();
     if (hwnd_) {
-        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
+        KillTimer(hwnd_, kCompatibilityRefreshTimer);
         ShowWindow(hwnd_, SW_HIDE);
     }
 }
@@ -322,7 +324,7 @@ void DesktopWindow::PositionDesktopWindow() {
     const RECT bounds = PreferredDesktopBounds();
     HWND insertAfter = nullptr;
     UINT flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
-    if (wallpaperEngineMode_) {
+    if (compatibilityMode_) {
         insertAfter = desktopHost_ ? HWND_TOP : HWND_BOTTOM;
     } else {
         flags |= SWP_NOZORDER;
@@ -356,8 +358,8 @@ bool DesktopWindow::AttachToDesktopHost(HWND host) {
     return true;
 }
 
-void DesktopWindow::RefreshWallpaperEngineIntegration() {
-    if (!wallpaperEngineMode_) {
+void DesktopWindow::RefreshDesktopCompatibilityIntegration() {
+    if (!compatibilityMode_) {
         return;
     }
 
@@ -431,8 +433,8 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         InvalidateRect(hwnd_, nullptr, FALSE);
         return 0;
     case WM_TIMER:
-        if (wParam == kWallpaperEngineRefreshTimer) {
-            RefreshWallpaperEngineIntegration();
+        if (wParam == kCompatibilityRefreshTimer) {
+            RefreshDesktopCompatibilityIntegration();
             return 0;
         }
         break;
@@ -491,7 +493,12 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
             }
             if (changed) {
                 movedDuringDrag_ = true;
-                RecalculateRects();
+                for (const auto& origin : dragOrigins_) {
+                    const int renderIndex = FindItemByObjectIndex(origin.objectIndex);
+                    if (renderIndex >= 0) {
+                        RecalculateItemRect(items_[static_cast<size_t>(renderIndex)]);
+                    }
+                }
                 for (const auto& oldRect : oldBounds) {
                     InvalidateRenderRect(oldRect);
                 }
@@ -503,10 +510,17 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
         } else if (selectingBox_ && (wParam & MK_LBUTTON) != 0) {
+            RECT previousBox = CurrentSelectionBoxRect();
+            const std::vector<int> previousSelection = selectedObjectIndices_;
             selectionCurrent_.x = GET_X_LPARAM(lParam);
             selectionCurrent_.y = GET_Y_LPARAM(lParam);
             SelectObjectsInBox();
-            InvalidateRect(hwnd_, nullptr, FALSE);
+            InflateRect(&previousBox, 2, 2);
+            RECT currentBox = CurrentSelectionBoxRect();
+            InflateRect(&currentBox, 2, 2);
+            InvalidateRect(hwnd_, &previousBox, FALSE);
+            InvalidateRect(hwnd_, &currentBox, FALSE);
+            InvalidateSelectionChanges(previousSelection);
         }
         return 0;
     case WM_MOUSEWHEEL:
@@ -597,7 +611,7 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
     case WM_NCDESTROY:
     {
-        KillTimer(hwnd_, kWallpaperEngineRefreshTimer);
+        KillTimer(hwnd_, kCompatibilityRefreshTimer);
         RestoreDesktopIcons();
         HWND oldHwnd = hwnd_;
         hwnd_ = nullptr;
@@ -609,10 +623,41 @@ LRESULT DesktopWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam)
 
 void DesktopWindow::LoadAssets() {
     items_.clear();
+    renderIndexByObjectIndex_.clear();
     wallpaper_.reset();
 
     AppConfig& config = app_->Config();
-    if (!wallpaperEngineMode_ &&
+    std::unordered_map<std::wstring, std::shared_ptr<Gdiplus::Bitmap>> bitmapCache;
+    const auto loadCandidateBitmap =
+        [&bitmapCache](const ImageCandidate& candidate) -> std::shared_ptr<Gdiplus::Bitmap> {
+            const std::wstring absolutePath = ToAbsoluteAppPath(candidate.internalPath);
+            const std::wstring cacheKey =
+                NormalizePathForCompare(absolutePath) + (candidate.originalIcon ? L"|original" : L"|replacement");
+            const auto cached = bitmapCache.find(cacheKey);
+            if (cached != bitmapCache.end()) {
+                return cached->second;
+            }
+
+            std::unique_ptr<Gdiplus::Bitmap> bitmap = LoadBitmapFromPath(absolutePath);
+            if (!bitmap) {
+                bitmapCache.emplace(cacheKey, nullptr);
+                return {};
+            }
+            if (candidate.originalIcon) {
+                bitmap = TrimTinyTransparentCanvas(std::move(bitmap));
+            }
+            bitmap = PrepareBitmapForScaling(std::move(bitmap));
+            if (!bitmap) {
+                bitmapCache.emplace(cacheKey, nullptr);
+                return {};
+            }
+
+            std::shared_ptr<Gdiplus::Bitmap> sharedBitmap(bitmap.release());
+            bitmapCache.emplace(cacheKey, sharedBitmap);
+            return sharedBitmap;
+        };
+
+    if (!compatibilityMode_ &&
         config.backgroundSource == BackgroundSource::SystemWallpaper &&
         !config.systemWallpaperPath.empty()) {
         wallpaper_ = LoadBitmapFromPath(config.systemWallpaperPath);
@@ -645,11 +690,10 @@ void DesktopWindow::LoadAssets() {
             continue;
         }
 
-        std::unique_ptr<Gdiplus::Bitmap> bitmap =
-            LoadBitmapFromPath(ToAbsoluteAppPath(selectedCandidate->internalPath));
+        std::shared_ptr<Gdiplus::Bitmap> bitmap = loadCandidateBitmap(*selectedCandidate);
         if (!bitmap) {
             for (const auto& candidate : object.candidates) {
-                bitmap = LoadBitmapFromPath(ToAbsoluteAppPath(candidate.internalPath));
+                bitmap = loadCandidateBitmap(candidate);
                 if (bitmap) {
                     selectedCandidate = &candidate;
                     break;
@@ -659,10 +703,6 @@ void DesktopWindow::LoadAssets() {
         if (!bitmap) {
             continue;
         }
-        if (selectedCandidate->originalIcon) {
-            bitmap = TrimTinyTransparentCanvas(std::move(bitmap));
-        }
-        bitmap = PrepareBitmapForScaling(std::move(bitmap));
 
         RenderItem item;
         item.objectIndex = i;
@@ -678,6 +718,10 @@ void DesktopWindow::LoadAssets() {
         }
         return left.objectIndex < right.objectIndex;
     });
+    renderIndexByObjectIndex_.assign(config.objects.size(), -1);
+    for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
+        renderIndexByObjectIndex_[static_cast<size_t>(items_[static_cast<size_t>(i)].objectIndex)] = i;
+    }
 }
 
 void DesktopWindow::AutoArrangeMissingPositions() {
@@ -839,11 +883,11 @@ void DesktopWindow::DrawBackground(Gdiplus::Graphics& graphics, const RECT& rc) 
                                 static_cast<float>(rc.right - rc.left),
                                 static_cast<float>(rc.bottom - rc.top));
     AppConfig& config = app_->Config();
-    if (wallpaperEngineMode_) {
+    if (compatibilityMode_) {
         graphics.Clear(Gdiplus::Color(255,
-                                      kWallpaperEngineTransparencyRed,
-                                      kWallpaperEngineTransparencyGreen,
-                                      kWallpaperEngineTransparencyBlue));
+                                      kCompatibilityTransparencyRed,
+                                      kCompatibilityTransparencyGreen,
+                                      kCompatibilityTransparencyBlue));
         return;
     }
     if (config.backgroundSource == BackgroundSource::SystemWallpaper && wallpaper_) {
@@ -926,12 +970,10 @@ int DesktopWindow::HitTest(int x, int y) const {
 }
 
 int DesktopWindow::FindItemByObjectIndex(int objectIndex) const {
-    for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
-        if (items_[static_cast<size_t>(i)].objectIndex == objectIndex) {
-            return i;
-        }
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(renderIndexByObjectIndex_.size())) {
+        return -1;
     }
-    return -1;
+    return renderIndexByObjectIndex_[static_cast<size_t>(objectIndex)];
 }
 
 bool DesktopWindow::IsObjectSelected(int objectIndex) const {
@@ -980,6 +1022,26 @@ void DesktopWindow::SelectObjectsInBox() {
     }
 }
 
+void DesktopWindow::InvalidateSelectionChanges(const std::vector<int>& previousSelection) {
+    for (int objectIndex : previousSelection) {
+        if (!IsObjectSelected(objectIndex)) {
+            const int renderIndex = FindItemByObjectIndex(objectIndex);
+            if (renderIndex >= 0) {
+                InvalidateRenderItem(items_[static_cast<size_t>(renderIndex)]);
+            }
+        }
+    }
+    for (int objectIndex : selectedObjectIndices_) {
+        if (std::find(previousSelection.begin(), previousSelection.end(), objectIndex) ==
+            previousSelection.end()) {
+            const int renderIndex = FindItemByObjectIndex(objectIndex);
+            if (renderIndex >= 0) {
+                InvalidateRenderItem(items_[static_cast<size_t>(renderIndex)]);
+            }
+        }
+    }
+}
+
 void DesktopWindow::InvalidateRenderItem(const RenderItem& item) {
     InvalidateRenderRect(item.bounds);
 }
@@ -1011,7 +1073,12 @@ void DesktopWindow::ScaleSelectedObjects(int delta) {
     if (!changed) {
         return;
     }
-    RecalculateRects();
+    for (int objectIndex : selectedObjectIndices_) {
+        const int renderIndex = FindItemByObjectIndex(objectIndex);
+        if (renderIndex >= 0) {
+            RecalculateItemRect(items_[static_cast<size_t>(renderIndex)]);
+        }
+    }
     for (const auto& oldRect : oldBounds) {
         InvalidateRenderRect(oldRect);
     }
@@ -1023,6 +1090,20 @@ void DesktopWindow::ScaleSelectedObjects(int delta) {
     }
     SaveConfigQuietly();
 }
+
+#ifdef MUSUKA_TESTING
+size_t DesktopWindow::RenderItemCountForTesting() const {
+    return items_.size();
+}
+
+size_t DesktopWindow::UniqueBitmapCountForTesting() const {
+    std::unordered_set<const Gdiplus::Bitmap*> uniqueBitmaps;
+    for (const auto& item : items_) {
+        uniqueBitmaps.insert(item.bitmap.get());
+    }
+    return uniqueBitmaps.size();
+}
+#endif
 
 void DesktopWindow::OpenObject(int objectIndex) {
     if (objectIndex < 0 || objectIndex >= static_cast<int>(app_->Config().objects.size())) {
